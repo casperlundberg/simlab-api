@@ -1,0 +1,286 @@
+package store
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strconv"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/casperlundberg/simlab-api/internal/domain"
+)
+
+// ErrNotFound is returned when a row does not exist, so the HTTP layer can map
+// it to a status code without matching message text.
+var ErrNotFound = errors.New("not found")
+
+// Store is Simlab's persistence.
+type Store struct {
+	pool *pgxpool.Pool
+}
+
+// Open connects, verifies the connection, and migrates.
+//
+// Migrating on start is right for a service that owns its schema outright and
+// deploys as one replica: the alternative is a separate step that can be
+// forgotten, leaving the service running against a schema it does not expect.
+func Open(ctx context.Context, databaseURL string) (*Store, error) {
+	pool, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("connecting to the database: %w", err)
+	}
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("the database is not reachable: %w", err)
+	}
+	if err := Migrate(ctx, pool); err != nil {
+		pool.Close()
+		return nil, err
+	}
+	return &Store{pool: pool}, nil
+}
+
+// Close releases the connection pool.
+func (s *Store) Close() { s.pool.Close() }
+
+// Ping reports whether the database is reachable, for the readiness probe.
+func (s *Store) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
+
+// SaveMine inserts or replaces a mine.
+func (s *Store) SaveMine(ctx context.Context, mine domain.Mine) error {
+	if err := mine.Validate(); err != nil {
+		return err
+	}
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO mines (id, name, sensors, background_rate, description)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (id) DO UPDATE SET
+			name = EXCLUDED.name, sensors = EXCLUDED.sensors,
+			background_rate = EXCLUDED.background_rate, description = EXCLUDED.description`,
+		mine.ID, mine.Name, mine.Sensors, mine.BackgroundRate, mine.Description)
+	if err != nil {
+		return fmt.Errorf("saving mine %q: %w", mine.ID, err)
+	}
+	return nil
+}
+
+// Mine fetches one mine.
+func (s *Store) Mine(ctx context.Context, id string) (domain.Mine, error) {
+	var mine domain.Mine
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, name, sensors, background_rate, description, created_at
+		FROM mines WHERE id = $1`, id,
+	).Scan(&mine.ID, &mine.Name, &mine.Sensors, &mine.BackgroundRate,
+		&mine.Description, &mine.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Mine{}, fmt.Errorf("%w: mine %q", ErrNotFound, id)
+	}
+	if err != nil {
+		return domain.Mine{}, fmt.Errorf("reading mine %q: %w", id, err)
+	}
+	return mine, nil
+}
+
+// Mines lists every mine, by name.
+func (s *Store) Mines(ctx context.Context) ([]domain.Mine, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, name, sensors, background_rate, description, created_at
+		FROM mines ORDER BY name`)
+	if err != nil {
+		return nil, fmt.Errorf("listing mines: %w", err)
+	}
+	defer rows.Close()
+
+	mines := []domain.Mine{}
+	for rows.Next() {
+		var mine domain.Mine
+		if err := rows.Scan(&mine.ID, &mine.Name, &mine.Sensors, &mine.BackgroundRate,
+			&mine.Description, &mine.CreatedAt); err != nil {
+			return nil, fmt.Errorf("reading a mine: %w", err)
+		}
+		mines = append(mines, mine)
+	}
+	return mines, rows.Err()
+}
+
+// DeleteMine removes a mine and, by cascade, its scenarios.
+func (s *Store) DeleteMine(ctx context.Context, id string) error {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM mines WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("deleting mine %q: %w", id, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%w: mine %q", ErrNotFound, id)
+	}
+	return nil
+}
+
+// SaveScenario inserts or replaces a scenario.
+func (s *Store) SaveScenario(ctx context.Context, scenario domain.Scenario) error {
+	if err := scenario.Validate(); err != nil {
+		return err
+	}
+
+	mix, err := json.Marshal(priorityMixToWire(scenario.PriorityMix))
+	if err != nil {
+		return fmt.Errorf("encoding the priority mix: %w", err)
+	}
+	bursts, err := json.Marshal(burstsToWire(scenario.Bursts))
+	if err != nil {
+		return fmt.Errorf("encoding the bursts: %w", err)
+	}
+
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO scenarios (id, mine_id, name, duration_ms, job_seconds, seed,
+			priority_mix, bursts, description)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		ON CONFLICT (id) DO UPDATE SET
+			mine_id = EXCLUDED.mine_id, name = EXCLUDED.name,
+			duration_ms = EXCLUDED.duration_ms, job_seconds = EXCLUDED.job_seconds,
+			seed = EXCLUDED.seed, priority_mix = EXCLUDED.priority_mix,
+			bursts = EXCLUDED.bursts, description = EXCLUDED.description`,
+		scenario.ID, scenario.MineID, scenario.Name, scenario.Duration.Milliseconds(),
+		scenario.JobSeconds, scenario.Seed, mix, bursts, scenario.Description)
+	if err != nil {
+		return fmt.Errorf("saving scenario %q: %w", scenario.ID, err)
+	}
+	return nil
+}
+
+// Scenario fetches one scenario.
+func (s *Store) Scenario(ctx context.Context, id string) (domain.Scenario, error) {
+	return s.scanScenario(s.pool.QueryRow(ctx, `
+		SELECT id, mine_id, name, duration_ms, job_seconds, seed, priority_mix,
+			bursts, description, created_at
+		FROM scenarios WHERE id = $1`, id), id)
+}
+
+// Scenarios lists scenarios, optionally for one mine.
+func (s *Store) Scenarios(ctx context.Context, mineID string) ([]domain.Scenario, error) {
+	query := `
+		SELECT id, mine_id, name, duration_ms, job_seconds, seed, priority_mix,
+			bursts, description, created_at
+		FROM scenarios`
+	args := []any{}
+	if mineID != "" {
+		query += ` WHERE mine_id = $1`
+		args = append(args, mineID)
+	}
+	query += ` ORDER BY name`
+
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("listing scenarios: %w", err)
+	}
+	defer rows.Close()
+
+	scenarios := []domain.Scenario{}
+	for rows.Next() {
+		scenario, err := s.scanScenarioRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		scenarios = append(scenarios, scenario)
+	}
+	return scenarios, rows.Err()
+}
+
+// DeleteScenario removes a scenario. Runs that used it keep their results.
+func (s *Store) DeleteScenario(ctx context.Context, id string) error {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM scenarios WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("deleting scenario %q: %w", id, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%w: scenario %q", ErrNotFound, id)
+	}
+	return nil
+}
+
+type scannable interface {
+	Scan(dest ...any) error
+}
+
+func (s *Store) scanScenario(row scannable, id string) (domain.Scenario, error) {
+	scenario, err := s.scanScenarioRow(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Scenario{}, fmt.Errorf("%w: scenario %q", ErrNotFound, id)
+	}
+	return scenario, err
+}
+
+func (s *Store) scanScenarioRow(row scannable) (domain.Scenario, error) {
+	var (
+		scenario   domain.Scenario
+		durationMs int64
+		mix        []byte
+		bursts     []byte
+	)
+	if err := row.Scan(&scenario.ID, &scenario.MineID, &scenario.Name, &durationMs,
+		&scenario.JobSeconds, &scenario.Seed, &mix, &bursts,
+		&scenario.Description, &scenario.CreatedAt); err != nil {
+		return domain.Scenario{}, err
+	}
+
+	scenario.Duration = time.Duration(durationMs) * time.Millisecond
+
+	var wireMix map[string]float64
+	if err := json.Unmarshal(mix, &wireMix); err != nil {
+		return domain.Scenario{}, fmt.Errorf("reading the priority mix of %q: %w", scenario.ID, err)
+	}
+	scenario.PriorityMix = map[domain.Priority]float64{}
+	for key, weight := range wireMix {
+		priority, err := strconv.Atoi(key)
+		if err != nil {
+			return domain.Scenario{}, fmt.Errorf("scenario %q has %q in its priority mix, "+
+				"which is not a priority level", scenario.ID, key)
+		}
+		scenario.PriorityMix[domain.Priority(priority)] = weight
+	}
+
+	var wireBursts []burstWire
+	if err := json.Unmarshal(bursts, &wireBursts); err != nil {
+		return domain.Scenario{}, fmt.Errorf("reading the bursts of %q: %w", scenario.ID, err)
+	}
+	for _, burst := range wireBursts {
+		scenario.Bursts = append(scenario.Bursts, domain.Burst{
+			At:              time.Duration(burst.AtMs) * time.Millisecond,
+			Magnitude:       burst.Magnitude,
+			AftershockDecay: time.Duration(burst.DecayMs) * time.Millisecond,
+		})
+	}
+	return scenario, nil
+}
+
+// burstWire is how a burst is stored. Durations are milliseconds, because
+// Postgres has no duration type and a number nobody has to guess the unit of
+// is worth the explicit suffix.
+type burstWire struct {
+	AtMs      int64   `json:"at_ms"`
+	Magnitude float64 `json:"magnitude"`
+	DecayMs   int64   `json:"aftershock_decay_ms"`
+}
+
+func burstsToWire(bursts []domain.Burst) []burstWire {
+	out := make([]burstWire, 0, len(bursts))
+	for _, burst := range bursts {
+		out = append(out, burstWire{
+			AtMs:      burst.At.Milliseconds(),
+			Magnitude: burst.Magnitude,
+			DecayMs:   burst.AftershockDecay.Milliseconds(),
+		})
+	}
+	return out
+}
+
+func priorityMixToWire(mix map[domain.Priority]float64) map[string]float64 {
+	out := make(map[string]float64, len(mix))
+	for priority, weight := range mix {
+		out[strconv.Itoa(int(priority))] = weight
+	}
+	return out
+}
