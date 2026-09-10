@@ -4,3 +4,9 @@
 coverage.out
 .env
 .env.local
+
+# helm dependency build vendors the sibling charts here. They are built from
+# the repositories next door, so committing them would mean two copies that
+# drift.
+/deploy/platform/charts/
+/deploy/platform/Chart.lock

@@ -1,0 +1,56 @@
+# The whole platform, in one namespace.
+#
+# Each service's chart already defaults to finding the others by release name
+# in the same namespace, so composing them takes almost no wiring — that is
+# deliberate, and it is why deploying them together works without a values file
+# full of hostnames.
+#
+# Two values have no defaults and must be set. Both are credentials, and a
+# chart that invented one would leave nobody able to say what it is:
+#
+#   autoscaler.auth.token         guards the autoscaler's API, and through it
+#                                 every platform credential the autoscaler
+#                                 holds
+#   simlab-api.autoscaler.token   the same token, as Simlab uses it
+#
+# Prefer existingSecret for both. A token in values.yaml ends up in a git
+# history.
+
+autoscaler:
+  auth:
+    existingSecret: ""
+    token: ""
+  persistence:
+    enabled: true
+    size: 1Gi
+    # No default. Unset on a cluster with no default StorageClass, the PVC
+    # stays Pending forever and nothing in the pod's events explains why.
+    storageClassName: ""
+  # Granted only in this namespace. Add the namespaces this autoscaler should
+  # be allowed to provision into; a ClusterRole is deliberately not an option.
+  rbac:
+    create: true
+    namespaces: []
+
+simlab-api:
+  autoscaler:
+    # Left empty so the chart resolves the autoscaler by release name in this
+    # namespace.
+    url: ""
+    existingSecret: ""
+    token: ""
+  database:
+    embedded:
+      enabled: true
+      storage: 8Gi
+      storageClassName: ""
+
+simlab-web:
+  api:
+    host: ""
+    port: 8081
+  ingress:
+    enabled: false
+    className: ""
+    host: ""
+    tls: []
