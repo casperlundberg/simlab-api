@@ -30,5 +30,4 @@ jobs:
           cache: true
       - run: make fmt-check
       - run: make vet
-      - run: make test-race
-      - run: make test-db
+      - run: make test-db-race

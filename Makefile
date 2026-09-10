@@ -18,9 +18,17 @@ TEST_DB_CONTAINER ?= simlab-test-pg
 test: ## Run unit tests (no database required)
 	go test $(PKG)
 
+# -p 1 runs one package at a time. Go tests packages in parallel by default,
+# and two suites that both clear the shared database will delete each other's
+# rows mid-test. Isolating by schema would be the alternative; serialising a
+# suite that takes about a second is the cheaper answer.
 .PHONY: test-db
 test-db: ## Run every test, including the ones that need a database
-	SIMLAB_TEST_DATABASE_URL="$(TEST_DB_URL)" go test $(PKG)
+	SIMLAB_TEST_DATABASE_URL="$(TEST_DB_URL)" go test -p 1 $(PKG)
+
+.PHONY: test-db-race
+test-db-race: ## Run every test with the race detector
+	SIMLAB_TEST_DATABASE_URL="$(TEST_DB_URL)" go test -p 1 -race $(PKG)
 
 .PHONY: db-up
 db-up: ## Start a scratch Postgres for the database tests
