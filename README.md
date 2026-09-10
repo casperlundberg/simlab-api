@@ -23,11 +23,37 @@ The point of having both behind one interface is that the decision path is
 identical. A simulation is not a model of the autoscaler; it *is* the
 autoscaler, with a different adapter underneath.
 
+## What a run produces
+
+Every decision is stored with the reasoning behind it — what the queue looked
+like, what was running, what the autoscaler decided, why, and what actually
+happened in that interval. So a run can be read back and the controller's
+judgement checked, not merely its outcome.
+
+The metrics are chosen so two runs are directly comparable on the only two
+questions that matter: did it hold the SLA, and what did that cost.
+
+Because a scenario carries a seed, two runs replay exactly the same jobs. The
+difference between their results is attributable to the settings that changed
+and to nothing else — which is what makes it an experiment rather than an
+anecdote.
+
+## Documentation
+
+- [`docs/interactions.md`](docs/interactions.md) — sequence diagrams for a simulation run, a live run, and comparing two policies
+- [`docs/development.md`](docs/development.md) — working on it, driving it by hand against a real autoscaler
+- [`api/openapi.yaml`](api/openapi.yaml) — the HTTP contract, checked against the routes by a test
+
 ## Running
 
 ```bash
+make db-up         # a scratch Postgres on :15432
 make test          # unit tests (no database needed)
-make test-db       # integration tests against a scratch Postgres
-make migrate       # apply migrations to $SIMLAB_DATABASE_URL
+make test-db       # everything, including the database and API suites
 make run           # serve on :8081
 ```
+
+Deployment is `deploy/chart`, which can bring its own Postgres for a
+self-contained install. `SIMLAB_DATABASE_URL` and `SIMLAB_AUTOSCALER_URL` have
+no defaults: without either, this service would start happily and fail every
+run, which is much harder to diagnose than a service that will not start.

@@ -1,0 +1,79 @@
+{{- if .Values.database.embedded.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "simlab-api.postgresName" . }}
+  labels:
+    {{- include "simlab-api.labels" . | nindent 4 }}
+spec:
+  ports:
+    - port: 5432
+      targetPort: postgres
+      name: postgres
+  selector:
+    app.kubernetes.io/name: {{ include "simlab-api.postgresName" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "simlab-api.postgresName" . }}
+  labels:
+    {{- include "simlab-api.labels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: {{ .Values.database.embedded.storage }}
+  {{- if .Values.database.embedded.storageClassName }}
+  storageClassName: {{ .Values.database.embedded.storageClassName }}
+  {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "simlab-api.postgresName" . }}
+  labels:
+    {{- include "simlab-api.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  # Recreate: two Postgres pods cannot share one ReadWriteOnce volume, and a
+  # rolling update would deadlock waiting for the old pod to release it.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "simlab-api.postgresName" . }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "simlab-api.postgresName" . }}
+    spec:
+      containers:
+        - name: postgres
+          image: {{ .Values.database.embedded.image }}
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: {{ .Values.database.embedded.database | quote }}
+            - name: POSTGRES_USER
+              value: {{ .Values.database.embedded.user | quote }}
+            - name: POSTGRES_PASSWORD
+              value: {{ .Values.database.embedded.password | quote }}
+            # The image refuses to initialise into a directory that already has
+            # lost+found in it, which every mounted volume does.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ .Values.database.embedded.user | quote }}]
+            initialDelaySeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "simlab-api.postgresName" . }}
+{{- end }}

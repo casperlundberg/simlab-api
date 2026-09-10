@@ -1,0 +1,71 @@
+image:
+  repository: ghcr.io/casperlundberg/simlab-api
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# One replica. Runs are held in memory by the process that started them, and a
+# second replica would neither know about them nor be able to stop them — and
+# a load balancer would send half the status requests to the wrong one.
+replicaCount: 1
+
+service:
+  type: ClusterIP
+  port: 8081
+
+# The autoscaler this Simlab drives.
+autoscaler:
+  # url defaults to the autoscaler service in this same namespace, which is the
+  # whole point of deploying them together.
+  url: ""
+  # existingSecret holding an "api-token" key, or a literal token for a
+  # development install. The token unlocks every platform credential the
+  # autoscaler holds, so an existingSecret is strongly preferred.
+  existingSecret: ""
+  token: ""
+
+database:
+  # existingSecret holding a "database-url" key. Preferred: a connection string
+  # contains a password, and values.yaml ends up in a git history.
+  existingSecret: ""
+  url: ""
+
+  # An in-namespace Postgres, for a self-contained install. Turn it off and
+  # point database.url at a managed instance for anything long-lived.
+  embedded:
+    enabled: true
+    image: postgres:16-alpine
+    database: simlab
+    user: simlab
+    password: simlab
+    storage: 8Gi
+    # Explicit, always. Unset on a cluster with no default StorageClass, the
+    # PVC stays Pending forever and nothing in the pod's events says why.
+    storageClassName: ""
+
+# A directory of built frontend assets, if this container also serves the SPA.
+# Leave empty when simlab-web is deployed as its own pod.
+staticDir: ""
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 256Mi
+  limits:
+    memory: 1Gi
+
+logLevel: info
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

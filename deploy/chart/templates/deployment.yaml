@@ -1,0 +1,87 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "simlab-api.fullname" . }}
+  labels:
+    {{- include "simlab-api.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  # Recreate: a run is held in memory by the process that started it, so two
+  # replicas would neither know about each other's runs nor be able to stop
+  # them, and a load balancer would send half the status requests to the pod
+  # that has never heard of the run being asked about.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "simlab-api.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "simlab-api.selectorLabels" . | nindent 8 }}
+    spec:
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: simlab-api
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8081
+          env:
+            - name: SIMLAB_ADDRESS
+              value: ":8081"
+            - name: SIMLAB_LOG_LEVEL
+              value: {{ .Values.logLevel | quote }}
+            - name: SIMLAB_AUTOSCALER_URL
+              value: {{ include "simlab-api.autoscalerURL" . | quote }}
+            {{- if .Values.staticDir }}
+            - name: SIMLAB_STATIC_DIR
+              value: {{ .Values.staticDir | quote }}
+            {{- end }}
+            - name: SIMLAB_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret | default (include "simlab-api.secretName" .) }}
+                  key: database-url
+            {{- if or .Values.autoscaler.existingSecret .Values.autoscaler.token }}
+            - name: SIMLAB_AUTOSCALER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.autoscaler.existingSecret | default (include "simlab-api.secretName" .) }}
+                  key: api-token
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+          # Runs in flight are stopped, not killed, so they clean up their
+          # ephemeral autoscaler targets on the way out.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 2"]
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      terminationGracePeriodSeconds: 60
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

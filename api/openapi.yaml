@@ -1,0 +1,599 @@
+openapi: 3.1.0
+info:
+  title: Simlab
+  version: "1.0.0"
+  description: |
+    The backend of Simlab: a mining-workload simulation and emulation
+    application.
+
+    Simlab drives **runs**. A run replays a seismic-processing workload and
+    asks the real autoscaler what to do about it, cycle by cycle, storing every
+    observation and decision.
+
+    Two modes, differing only in which autoscaler target the run drives:
+
+    - **simulation** — a target on the autoscaler's `simulation` platform.
+      Decisions are computed by the real decision engine and reported back;
+      nothing is provisioned; time is compressed. Simlab creates the target for
+      the run and removes it afterwards.
+    - **live** — a target on real infrastructure. Simlab observes and records;
+      it never drives, because a second controller issuing decisions would be
+      two schedulers fighting over one fleet.
+
+    This service is also the only thing that talks to the autoscaler. The
+    `/api/platforms`, `/api/targets` and `/api/targets/{id}/settings` endpoints
+    stand in front of it, so a browser needs no credential: the autoscaler's
+    token unlocks every platform credential it holds, and a token that reaches
+    a browser has been disclosed.
+
+    Durations are seconds throughout.
+
+servers:
+  - url: /
+
+tags:
+  - name: health
+  - name: mines
+    description: The sites whose workloads are studied.
+  - name: scenarios
+    description: Workloads to replay. A scenario's seed is what makes two runs comparable.
+  - name: runs
+    description: Replaying a workload, and reading what happened.
+  - name: autoscaler
+    description: The live autoscaler, reached through this service.
+
+paths:
+  /healthz:
+    get:
+      tags: [health]
+      summary: Liveness probe
+      responses:
+        "200": { description: Alive., content: { application/json: { schema: { type: object } } } }
+
+  /readyz:
+    get:
+      tags: [health]
+      summary: Readiness probe
+      description: Fails while the database is unreachable, and reports how many runs are in flight.
+      responses:
+        "200": { description: Ready., content: { application/json: { schema: { type: object } } } }
+        "503": { description: The database is unreachable., content: { application/json: { schema: { type: object } } } }
+
+  /api/mines:
+    get:
+      tags: [mines]
+      summary: List mines
+      responses:
+        "200":
+          description: Every mine, by name.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mines: { type: array, items: { $ref: "#/components/schemas/Mine" } }
+    post:
+      tags: [mines]
+      summary: Create or replace a mine
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/Mine" } } }
+      responses:
+        "200": { description: Saved., content: { application/json: { schema: { $ref: "#/components/schemas/Mine" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /api/mines/{id}:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    get:
+      tags: [mines]
+      summary: Fetch a mine
+      responses:
+        "200": { description: The mine., content: { application/json: { schema: { $ref: "#/components/schemas/Mine" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [mines]
+      summary: Replace a mine
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/Mine" } } }
+      responses:
+        "200": { description: Saved., content: { application/json: { schema: { $ref: "#/components/schemas/Mine" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+    delete:
+      tags: [mines]
+      summary: Delete a mine and its scenarios
+      responses:
+        "204": { description: Deleted. }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/scenarios:
+    get:
+      tags: [scenarios]
+      summary: List scenarios
+      parameters:
+        - name: mine_id
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Scenarios.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  scenarios: { type: array, items: { $ref: "#/components/schemas/Scenario" } }
+    post:
+      tags: [scenarios]
+      summary: Create or replace a scenario
+      description: |
+        A scenario with no `seed` is given one, because a scenario that cannot
+        be replayed identically makes every comparison drawn from it
+        meaningless.
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/Scenario" } } }
+      responses:
+        "200": { description: Saved., content: { application/json: { schema: { $ref: "#/components/schemas/Scenario" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /api/scenarios/{id}:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    get:
+      tags: [scenarios]
+      summary: Fetch a scenario
+      responses:
+        "200": { description: The scenario., content: { application/json: { schema: { $ref: "#/components/schemas/Scenario" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [scenarios]
+      summary: Replace a scenario
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/Scenario" } } }
+      responses:
+        "200": { description: Saved., content: { application/json: { schema: { $ref: "#/components/schemas/Scenario" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+    delete:
+      tags: [scenarios]
+      summary: Delete a scenario
+      description: Runs that used it keep their results; their scenario reference is cleared.
+      responses:
+        "204": { description: Deleted. }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/runs:
+    get:
+      tags: [runs]
+      summary: List runs, newest first
+      description: |
+        Each entry carries `active`, which the database alone cannot answer: a
+        process that was killed leaves a run stuck at `running` in the table.
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [pending, running, completed, failed, cancelled] }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100, maximum: 500 }
+      responses:
+        "200":
+          description: Runs.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  runs:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        run: { $ref: "#/components/schemas/Run" }
+                        active: { type: boolean }
+    post:
+      tags: [runs]
+      summary: Start a run
+      description: |
+        Returns as soon as the run is under way; it executes in the background
+        and survives the tab that started it being closed.
+
+        A simulation run gets an autoscaler target of its own, created with the
+        run and removed when it ends — including when it fails. A shared target
+        would start each run holding the previous run's executors.
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/RunRequest" } } }
+      responses:
+        "202": { description: Started., content: { application/json: { schema: { $ref: "#/components/schemas/Run" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: This run is already in flight., content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /api/runs/{id}:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    get:
+      tags: [runs]
+      summary: Fetch a run, with its metrics and the settings it ran under
+      responses:
+        "200":
+          description: The run.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  run: { $ref: "#/components/schemas/Run" }
+                  active: { type: boolean }
+                  metrics: { $ref: "#/components/schemas/Metrics" }
+                  settings: { type: object }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [runs]
+      summary: Delete a run and everything recorded for it
+      responses:
+        "204": { description: Deleted. }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: The run is still in flight; cancel it first., content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /api/runs/{id}/cancel:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    post:
+      tags: [runs]
+      summary: Stop a run
+      description: Whatever it recorded before stopping stands, and it is marked cancelled rather than failed.
+      responses:
+        "202": { description: Stopping., content: { application/json: { schema: { type: object } } } }
+        "409": { description: The run is not in flight., content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /api/runs/{id}/cycles:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+      - name: from
+        in: query
+        description: Return cycles after this sequence number, so a client follows a run without refetching its whole timeline.
+        schema: { type: integer, default: 0 }
+      - name: limit
+        in: query
+        schema: { type: integer, default: 5000, maximum: 20000 }
+    get:
+      tags: [runs]
+      summary: A run's timeline
+      responses:
+        "200":
+          description: Cycles, in order, with the sequence to resume from.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cycles: { type: array, items: { $ref: "#/components/schemas/Cycle" } }
+                  next: { type: integer }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/runs/{id}/metrics:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    get:
+      tags: [runs]
+      summary: What a run amounted to
+      responses:
+        "200": { description: Metrics., content: { application/json: { schema: { $ref: "#/components/schemas/Metrics" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/runs/{id}/events:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    get:
+      tags: [runs]
+      summary: Watch one run as it happens
+      description: |
+        Server-sent events. Event types are `status`, `cycle` and `metrics`.
+
+        A watcher that falls behind loses events rather than slowing the run
+        down, so a client that reconnects should re-read the run's cycles from
+        `/cycles?from=` rather than assuming the stream was complete.
+      responses:
+        "200":
+          description: An event stream.
+          content:
+            text/event-stream:
+              schema: { type: string }
+
+  /api/events:
+    get:
+      tags: [runs]
+      summary: Watch every run
+      responses:
+        "200":
+          description: An event stream.
+          content:
+            text/event-stream:
+              schema: { type: string }
+
+  /api/platforms:
+    get:
+      tags: [autoscaler]
+      summary: What the autoscaler can scale
+      description: Passed through unchanged, so a client can render a registration form for a platform it was never written for.
+      responses:
+        "200": { description: Platforms., content: { application/json: { schema: { type: object } } } }
+
+  /api/targets:
+    get:
+      tags: [autoscaler]
+      summary: List the autoscaler's targets
+      responses:
+        "200": { description: Targets., content: { application/json: { schema: { type: object } } } }
+    post:
+      tags: [autoscaler]
+      summary: Register a target on real infrastructure
+      description: |
+        Credentials go in and are never returned; the autoscaler redacts them.
+        They pass through this service and are not stored here.
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object } } }
+      responses:
+        "201": { description: Registered., content: { application/json: { schema: { type: object } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /api/targets/{id}:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    get:
+      tags: [autoscaler]
+      summary: Fetch a target
+      responses:
+        "200": { description: The target., content: { application/json: { schema: { type: object } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [autoscaler]
+      summary: Remove a target
+      responses:
+        "204": { description: Removed. }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/targets/{id}/settings:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    get:
+      tags: [autoscaler]
+      summary: A target's live settings
+      responses:
+        "200": { description: Settings., content: { application/json: { schema: { type: object } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [autoscaler]
+      summary: Change a live autoscaler's policy
+      description: |
+        This is what makes the settings editor real rather than decorative: the
+        change reaches the running controller and is in force on its next
+        decision cycle.
+
+        Pass `expected_version` to make the write a compare-and-swap.
+      parameters:
+        - name: expected_version
+          in: query
+          schema: { type: integer, format: int64 }
+        - name: X-Simlab-Actor
+          in: header
+          description: Carried through to the autoscaler's change log, so the change is attributable to a person rather than to "simlab".
+          schema: { type: string }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object } } }
+      responses:
+        "200": { description: Applied., content: { application/json: { schema: { type: object } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: The settings changed since the version being edited., content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /api/targets/{id}/status:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    get:
+      tags: [autoscaler]
+      summary: A target's last decision
+      responses:
+        "200": { description: Status., content: { application/json: { schema: { type: object } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+components:
+  parameters:
+    ID:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+
+  responses:
+    BadRequest:
+      description: The request cannot be carried out, with the reason given.
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    NotFound:
+      description: No such thing.
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+      required: [error]
+
+    Mine:
+      type: object
+      properties:
+        id: { type: string, example: storhall }
+        name: { type: string }
+        sensors:
+          type: integer
+          minimum: 1
+          description: |
+            How many seismic sensors the site runs. It sets the scale of
+            everything downstream: more sensors means more picks per event, and
+            more picks means more jobs.
+        background_rate_per_hour:
+          type: number
+          description: Events per hour when nothing unusual is happening.
+        description: { type: string }
+        created_at: { type: string, format: date-time }
+      required: [id, name, sensors]
+
+    Burst:
+      type: object
+      description: |
+        A seismic event that floods the queue. This is the reason the system
+        exists: ordinary monitoring is steady and easy to provision for, while
+        a rock burst produces an hour of work in a minute and keeps producing
+        aftershocks for hours.
+      properties:
+        at_seconds:
+          type: number
+          description: How far into the scenario the main event happens.
+        magnitude:
+          type: number
+          description: How far above background the rate spikes at the instant of the event.
+        aftershock_decay_seconds:
+          type: number
+          description: |
+            The timescale of the Omori-law aftershock tail. Zero means the
+            event subsides at once, which makes recovery far easier than it is
+            in practice.
+      required: [at_seconds, magnitude]
+
+    Scenario:
+      type: object
+      properties:
+        id: { type: string }
+        mine_id: { type: string }
+        name: { type: string }
+        duration_seconds: { type: number }
+        job_seconds:
+          type: number
+          description: How long one job occupies an executor, before per-job variation.
+        seed:
+          type: integer
+          format: int64
+          description: |
+            Two runs of one scenario replay exactly the same jobs, which is
+            what makes comparing two autoscaler settings a controlled
+            experiment rather than an anecdote. Generated if omitted.
+        priority_mix:
+          type: object
+          additionalProperties: { type: number }
+          description: Relative weights per priority level. They need not sum to anything.
+          example: { "100": 1, "50": 1, "25": 2 }
+        bursts:
+          type: array
+          items: { $ref: "#/components/schemas/Burst" }
+        description: { type: string }
+        created_at: { type: string, format: date-time }
+      required: [mine_id, duration_seconds, job_seconds, priority_mix]
+
+    RunRequest:
+      type: object
+      properties:
+        name: { type: string }
+        mode: { type: string, enum: [simulation, live] }
+        scenario_id:
+          type: string
+          description: Required for a simulation run; there is nothing to replay without one.
+        target_id:
+          type: string
+          description: |
+            The autoscaler target for a live run. A simulation run leaves this
+            empty and gets a target of its own.
+        decision_interval_seconds:
+          type: number
+          default: 15
+          description: Should match the target's own setting, or the run measures a different controller from the one deployed.
+        time_compression:
+          type: number
+          default: 600
+          description: |
+            Simulated seconds per real second, so a run can be watched while it
+            happens. Very large values mean "as fast as it will go".
+        settings:
+          type: object
+          description: |
+            The autoscaler settings this run is executed under. This is how one
+            scenario is replayed under different policies — the comparison the
+            whole application exists to make.
+      required: [mode]
+
+    Run:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        scenario_id: { type: string }
+        target_id: { type: string }
+        mode: { type: string, enum: [simulation, live] }
+        status: { type: string, enum: [pending, running, completed, failed, cancelled] }
+        simulated_start: { type: string, format: date-time }
+        time_compression: { type: number }
+        decision_interval: { type: integer, description: Nanoseconds, as Go renders a duration. }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time }
+        error: { type: string }
+        created_at: { type: string, format: date-time }
+
+    QueueSnapshot:
+      type: object
+      properties:
+        depth: { type: integer }
+        oldest_job_age_seconds: { type: number }
+        arrival_rate_per_second: { type: number }
+
+    Cycle:
+      type: object
+      description: |
+        One decision, with everything needed to explain it later: what the
+        queue looked like, what was running, what the autoscaler decided and
+        why, and what actually happened in that interval.
+      properties:
+        run_id: { type: string }
+        sequence: { type: integer }
+        at: { type: string, format: date-time }
+        queues:
+          type: object
+          additionalProperties: { $ref: "#/components/schemas/QueueSnapshot" }
+        local_ready: { type: integer }
+        cloud_ready: { type: integer }
+        local_pending: { type: integer }
+        cloud_pending: { type: integer }
+        action: { type: string }
+        plan_local: { type: integer }
+        plan_cloud: { type: integer }
+        reason: { type: string }
+        constraint: { type: string }
+        settings_version: { type: integer, format: int64 }
+        breach_expected:
+          type: boolean
+          description: What the autoscaler predicted. Comparing it with `breached` is the point of a run.
+        completed: { type: integer }
+        breached: { type: integer }
+
+    Metrics:
+      type: object
+      description: |
+        Chosen so two runs of one scenario under different settings are
+        directly comparable on the only two questions that matter: did it hold
+        the SLA, and what did that cost.
+      properties:
+        run_id: { type: string }
+        jobs_submitted: { type: integer }
+        jobs_completed: { type: integer }
+        sla_breaches: { type: integer }
+        breach_rate: { type: number }
+        mean_wait_seconds: { type: number }
+        p95_wait_seconds: { type: number }
+        max_wait_seconds: { type: number }
+        peak_queue_depth: { type: integer }
+        local_executor_seconds:
+          type: number
+          description: Charged on ready executors only; capacity that spent an interval starting up did no work.
+        cloud_executor_seconds:
+          type: number
+          description: Kept separate because cloud is the tier that is actually billed.
+        peak_local_executors: { type: integer }
+        peak_cloud_executors: { type: integer }
+        scaling_actions: { type: integer }
+        cycles: { type: integer }
