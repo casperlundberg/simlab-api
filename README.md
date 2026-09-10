@@ -53,7 +53,12 @@ make test-db       # everything, including the database and API suites
 make run           # serve on :8081
 ```
 
-Deployment is `deploy/chart`, which can bring its own Postgres for a
-self-contained install. `SIMLAB_DATABASE_URL` and `SIMLAB_AUTOSCALER_URL` have
+Deployment is `deploy/chart` for this service alone, or
+[`deploy/platform`](deploy/platform/README.md) for the whole platform in one
+namespace — autoscaler, backend, frontend and a Postgres. That directory also
+holds `verify.sh`, which runs the whole thing for real and checks it does what
+it claims.
+
+`deploy/chart` can bring its own Postgres for a self-contained install. `SIMLAB_DATABASE_URL` and `SIMLAB_AUTOSCALER_URL` have
 no defaults: without either, this service would start happily and fail every
 run, which is much harder to diagnose than a service that will not start.
