@@ -61,6 +61,9 @@ type target struct {
 	// simulation adapter models it.
 	local []time.Time
 	cloud []time.Time
+
+	// lastDecision is what /status reports, for testing a live run.
+	lastDecision map[string]any
 }
 
 // New builds a fake with no targets.
@@ -120,6 +123,8 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		s.servePatchSettings(w, r, parts[2])
 	case len(parts) == 4 && parts[3] == "cycle" && r.Method == http.MethodPost:
 		s.serveCycle(w, r, parts[2])
+	case len(parts) == 4 && parts[3] == "status" && r.Method == http.MethodGet:
+		s.serveStatus(w, parts[2])
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "no such endpoint: " + path})
 	}
@@ -354,6 +359,32 @@ func (s *Server) serveCycle(w http.ResponseWriter, r *http.Request, id string) {
 			"applied": map[string]any{"local_executors": planLocal, "cloud_executors": planCloud},
 			"changed": action != "maintain",
 		},
+	})
+}
+
+// LiveDecision sets what a target reports as its last decision, so a live run
+// can be tested against a target that is scaling without Simlab driving it.
+func (s *Server) LiveDecision(id string, decision map[string]any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if t, ok := s.targets[id]; ok {
+		t.lastDecision = decision
+	}
+}
+
+func (s *Server) serveStatus(w http.ResponseWriter, id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	t, ok := s.targets[id]
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "no such target: " + id})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id": t.id, "kind": t.kind, "mode": t.mode,
+		"settings_version": t.version,
+		"last_decision":    t.lastDecision,
 	})
 }
 

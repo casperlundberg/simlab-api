@@ -1,0 +1,461 @@
+// Package run executes a run: it replays a workload against the real
+// autoscaler and records what happened.
+//
+// A simulation run and a live run differ in exactly one respect. A simulation
+// owns the queue — it generates the jobs, serves them with whatever capacity
+// the autoscaler provisions, and moves a clock of its own. A live run owns
+// nothing: it watches a target that is really scaling real infrastructure and
+// records the decisions as they happen. The decision path is the autoscaler's
+// in both cases.
+package run
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"math"
+	"strconv"
+	"time"
+
+	"github.com/casperlundberg/simlab-api/internal/autoscaler"
+	"github.com/casperlundberg/simlab-api/internal/domain"
+	"github.com/casperlundberg/simlab-api/internal/queue"
+	"github.com/casperlundberg/simlab-api/internal/workload"
+)
+
+// maxCycles bounds a run.
+//
+// A scenario whose queue never drains would otherwise loop until something
+// else gave out. Stopping and saying so is far better than a run that is still
+// going hours later with nobody able to say why.
+const maxCycles = 200_000
+
+// Spec is everything needed to execute one run.
+type Spec struct {
+	Run      domain.Run
+	Mine     domain.Mine
+	Scenario domain.Scenario
+
+	// Settings is a patch applied to the ephemeral target a simulation run
+	// creates. It is how one scenario is replayed under different policies.
+	Settings json.RawMessage
+}
+
+// Recorder is where a run's results go.
+type Recorder interface {
+	SaveCycle(ctx context.Context, cycle domain.Cycle) error
+	SaveMetrics(ctx context.Context, metrics domain.Metrics) error
+	SetStatus(ctx context.Context, runID string, status domain.RunStatus, failure string) error
+}
+
+// Publisher is how a run in flight reaches whoever is watching it.
+type Publisher interface {
+	Publish(event Event)
+}
+
+// Event is one thing that happened during a run.
+type Event struct {
+	RunID   string           `json:"run_id"`
+	Type    string           `json:"type"`
+	Status  domain.RunStatus `json:"status,omitempty"`
+	Cycle   *domain.Cycle    `json:"cycle,omitempty"`
+	Metrics *domain.Metrics  `json:"metrics,omitempty"`
+	Error   string           `json:"error,omitempty"`
+}
+
+// Event types.
+const (
+	EventStatus  = "status"
+	EventCycle   = "cycle"
+	EventMetrics = "metrics"
+)
+
+// Engine executes runs.
+type Engine struct {
+	autoscaler *autoscaler.Client
+	recorder   Recorder
+	publisher  Publisher
+
+	// sleep is how the engine paces a run. Injectable so tests do not wait.
+	sleep func(time.Duration)
+	now   func() time.Time
+}
+
+// New builds an engine.
+func New(client *autoscaler.Client, recorder Recorder, publisher Publisher) *Engine {
+	return &Engine{
+		autoscaler: client,
+		recorder:   recorder,
+		publisher:  publisher,
+		sleep:      func(d time.Duration) { time.Sleep(d) },
+		now:        func() time.Time { return time.Now().UTC() },
+	}
+}
+
+// WithClock replaces the engine's pacing and clock, for tests.
+func (e *Engine) WithClock(sleep func(time.Duration), now func() time.Time) *Engine {
+	e.sleep = sleep
+	e.now = now
+	return e
+}
+
+// Execute runs a run to completion, recording as it goes.
+func (e *Engine) Execute(ctx context.Context, spec Spec) (domain.Metrics, error) {
+	if err := spec.Run.Validate(); err != nil {
+		return domain.Metrics{}, err
+	}
+
+	e.setStatus(ctx, spec.Run.ID, domain.StatusRunning, "")
+
+	var (
+		metrics domain.Metrics
+		err     error
+	)
+	switch spec.Run.Mode {
+	case domain.ModeSimulation:
+		metrics, err = e.simulate(ctx, spec)
+	case domain.ModeLive:
+		metrics, err = e.observe(ctx, spec)
+	default:
+		err = fmt.Errorf("run mode %q cannot be executed", spec.Run.Mode)
+	}
+
+	switch {
+	case err != nil && ctx.Err() != nil:
+		// Cancelled rather than broken. Whatever was recorded before the stop
+		// is still worth keeping and reading.
+		e.setStatus(ctx, spec.Run.ID, domain.StatusCancelled, "")
+		return metrics, err
+	case err != nil:
+		e.setStatus(ctx, spec.Run.ID, domain.StatusFailed, err.Error())
+		return metrics, err
+	}
+
+	if saveErr := e.recorder.SaveMetrics(context.WithoutCancel(ctx), metrics); saveErr != nil {
+		e.setStatus(ctx, spec.Run.ID, domain.StatusFailed, saveErr.Error())
+		return metrics, saveErr
+	}
+	e.publish(Event{RunID: spec.Run.ID, Type: EventMetrics, Metrics: &metrics})
+	e.setStatus(ctx, spec.Run.ID, domain.StatusCompleted, "")
+	return metrics, nil
+}
+
+// simulate replays a generated workload against an autoscaler target of its
+// own.
+//
+// The target is created for the run and removed afterwards. That is what makes
+// each run start from an empty fleet: a shared target would begin holding the
+// previous run's executors, which the new run never provisioned and cannot
+// account for, and two concurrent runs would fight over one fleet.
+func (e *Engine) simulate(ctx context.Context, spec Spec) (domain.Metrics, error) {
+	jobs, err := workload.Generate(spec.Mine, spec.Scenario)
+	if err != nil {
+		return domain.Metrics{}, err
+	}
+
+	if err := e.createTarget(ctx, spec); err != nil {
+		return domain.Metrics{}, err
+	}
+	// Removed even when the run fails; a failed run's leftover target would
+	// accumulate silently until somebody noticed a registry full of them.
+	defer func() {
+		_ = e.autoscaler.DeleteTarget(context.WithoutCancel(ctx), spec.Run.TargetID)
+	}()
+
+	deadlines, err := e.deadlinesOf(ctx, spec.Run.TargetID)
+	if err != nil {
+		return domain.Metrics{}, err
+	}
+
+	simulator := queue.New(jobs, deadlines)
+	interval := spec.Run.DecisionInterval
+	start := spec.Run.SimulatedStart
+	if start.IsZero() {
+		start = e.now()
+	}
+
+	// Pacing. A run is watched while it happens, so compression turns
+	// simulated time into real time: 3600 replays an hour a second. Very large
+	// values simply mean "as fast as it will go".
+	pace := time.Duration(0)
+	if spec.Run.TimeCompression > 0 {
+		pace = time.Duration(interval.Seconds() / spec.Run.TimeCompression * float64(time.Second))
+	}
+
+	metrics := domain.Metrics{RunID: spec.Run.ID}
+	capacity := autoscaler.Capacity{}
+
+	for sequence := 1; ; sequence++ {
+		if err := ctx.Err(); err != nil {
+			return metrics, err
+		}
+		if sequence > maxCycles {
+			return metrics, fmt.Errorf("run %q exceeded %d cycles without draining: the "+
+				"scenario produces more work than the target's caps can ever serve",
+				spec.Run.ID, maxCycles)
+		}
+
+		elapsed := time.Duration(sequence) * interval
+
+		// Only ready executors do work. Pending capacity has been asked for
+		// and is still starting, and counting it would make the simulation
+		// kinder to the autoscaler than reality is.
+		progress := simulator.Advance(elapsed, capacity.LocalReady+capacity.CloudReady)
+
+		if elapsed > spec.Scenario.Duration && simulator.Done() {
+			break
+		}
+
+		snapshot := simulator.Snapshot(elapsed)
+		result, err := e.autoscaler.Cycle(ctx, spec.Run.TargetID, autoscaler.CycleRequest{
+			At:       start.Add(elapsed),
+			Workload: toWorkload(snapshot, spec.Scenario.JobSeconds),
+		})
+		if err != nil {
+			return metrics, fmt.Errorf("cycle %d: %w", sequence, err)
+		}
+		capacity = result.Observation.Capacity
+
+		cycle := toCycle(spec.Run.ID, sequence, start.Add(elapsed), snapshot, result, progress)
+		if err := e.recorder.SaveCycle(ctx, cycle); err != nil {
+			return metrics, err
+		}
+		e.publish(Event{RunID: spec.Run.ID, Type: EventCycle, Cycle: &cycle})
+
+		accumulate(&metrics, cycle, interval)
+
+		if pace > 0 {
+			e.sleep(pace)
+		}
+	}
+
+	finalise(&metrics, simulator.Stats())
+	return metrics, nil
+}
+
+// observe watches a target that is scaling real infrastructure and records
+// what it does.
+//
+// It drives nothing. A live target is either running its own loop or being
+// driven by whoever owns it, and a second controller issuing cycles would be
+// two schedulers fighting over one fleet.
+func (e *Engine) observe(ctx context.Context, spec Spec) (domain.Metrics, error) {
+	metrics := domain.Metrics{RunID: spec.Run.ID}
+	interval := spec.Run.DecisionInterval
+
+	var lastSeen time.Time
+	sequence := 0
+
+	for {
+		if err := ctx.Err(); err != nil {
+			// A live run has no natural end: it is stopped. Everything
+			// recorded so far stands.
+			finalise(&metrics, queue.Stats{})
+			return metrics, err
+		}
+
+		status, err := e.autoscaler.TargetStatus(ctx, spec.Run.TargetID)
+		if err != nil {
+			return metrics, err
+		}
+
+		if decision := status.LastDecision; decision != nil && decision.At.After(lastSeen) {
+			lastSeen = decision.At
+			sequence++
+
+			cycle := domain.Cycle{
+				RunID: spec.Run.ID, Sequence: sequence, At: decision.At,
+				Action: decision.Action, PlanLocal: decision.Plan.LocalExecutors,
+				PlanCloud: decision.Plan.CloudExecutors, Reason: decision.Reason,
+				Constraint: decision.Constraint, SettingsVersion: decision.SettingsVersion,
+				BreachExpected: decision.Projection.BreachExpected,
+			}
+			if err := e.recorder.SaveCycle(ctx, cycle); err != nil {
+				return metrics, err
+			}
+			e.publish(Event{RunID: spec.Run.ID, Type: EventCycle, Cycle: &cycle})
+
+			metrics.Cycles++
+			if decision.Action != "maintain" {
+				metrics.ScalingActions++
+			}
+			metrics.PeakLocalExecutors = maxInt(metrics.PeakLocalExecutors, decision.Plan.LocalExecutors)
+			metrics.PeakCloudExecutors = maxInt(metrics.PeakCloudExecutors, decision.Plan.CloudExecutors)
+		}
+
+		e.sleep(interval)
+	}
+}
+
+func (e *Engine) createTarget(ctx context.Context, spec Spec) error {
+	// The coldstarts the simulated fleet honours come from the settings the
+	// run is being executed under, so a run that tunes coldstart is actually
+	// testing that coldstart.
+	config := map[string]string{}
+	if seconds := settingNumber(spec.Settings, "local_coldstart_seconds"); seconds != nil {
+		config["local_coldstart_seconds"] = strconv.Itoa(int(*seconds))
+	}
+	if seconds := settingNumber(spec.Settings, "cloud_coldstart_seconds"); seconds != nil {
+		config["cloud_coldstart_seconds"] = strconv.Itoa(int(*seconds))
+	}
+
+	_, err := e.autoscaler.CreateTarget(ctx, autoscaler.Target{
+		ID:     spec.Run.TargetID,
+		Name:   "Simlab run " + spec.Run.ID,
+		Kind:   "simulation",
+		Mode:   "driven",
+		Config: config,
+	}, spec.Settings)
+	if err != nil {
+		return fmt.Errorf("preparing the autoscaler target for run %q: %w", spec.Run.ID, err)
+	}
+	return nil
+}
+
+// deadlinesOf reads the SLA the target is actually configured with.
+//
+// Reading them rather than taking them from the run is what keeps a run
+// honest: the queue simulation counts a breach against exactly the deadline
+// the autoscaler was deciding against, so predicted and actual are comparable.
+// A run that used its own numbers would be marking a different exam from the
+// one the controller sat.
+func (e *Engine) deadlinesOf(ctx context.Context, targetID string) (queue.Deadlines, error) {
+	snapshot, err := e.autoscaler.GetSettings(ctx, targetID)
+	if err != nil {
+		return queue.Deadlines{}, err
+	}
+
+	var settings struct {
+		Deadlines map[string]float64 `json:"deadline_seconds_by_priority"`
+		Default   float64            `json:"default_deadline_seconds"`
+	}
+	if err := json.Unmarshal(snapshot.Settings, &settings); err != nil {
+		return queue.Deadlines{}, fmt.Errorf("reading the target's deadlines: %w", err)
+	}
+
+	levels := map[domain.Priority]time.Duration{}
+	for key, seconds := range settings.Deadlines {
+		priority, err := strconv.Atoi(key)
+		if err != nil {
+			return queue.Deadlines{}, fmt.Errorf("the target has a deadline for %q, which is "+
+				"not a priority level", key)
+		}
+		levels[domain.Priority(priority)] = time.Duration(seconds * float64(time.Second))
+	}
+
+	fallback := time.Duration(settings.Default * float64(time.Second))
+	if fallback <= 0 {
+		fallback = 24 * time.Hour
+	}
+	return queue.Deadlines{Levels: levels, Default: fallback}, nil
+}
+
+func (e *Engine) setStatus(ctx context.Context, runID string, status domain.RunStatus, failure string) {
+	// Status must be recorded even when the run was cancelled, or a stopped
+	// run would sit at "running" forever.
+	_ = e.recorder.SetStatus(context.WithoutCancel(ctx), runID, status, failure)
+	e.publish(Event{RunID: runID, Type: EventStatus, Status: status, Error: failure})
+}
+
+func (e *Engine) publish(event Event) {
+	if e.publisher != nil {
+		e.publisher.Publish(event)
+	}
+}
+
+// toWorkload turns a queue snapshot into what the autoscaler decides against.
+func toWorkload(snapshot map[domain.Priority]domain.QueueSnapshot, jobSeconds float64) *autoscaler.Workload {
+	queues := make(map[string]autoscaler.QueueInfo, len(snapshot))
+	for priority, level := range snapshot {
+		queues[strconv.Itoa(int(priority))] = autoscaler.QueueInfo{
+			Depth:               level.Depth,
+			OldestJobAgeSeconds: level.OldestJobAgeSeconds,
+			ArrivalRate:         level.ArrivalRate,
+		}
+	}
+
+	throughput := 1.0 / jobSeconds
+	if jobSeconds <= 0 || math.IsInf(throughput, 0) {
+		throughput = 1
+	}
+	return &autoscaler.Workload{Queues: queues, ExecutorThroughput: throughput}
+}
+
+func toCycle(runID string, sequence int, at time.Time,
+	snapshot map[domain.Priority]domain.QueueSnapshot,
+	result autoscaler.CycleResult, progress queue.Progress) domain.Cycle {
+	return domain.Cycle{
+		RunID: runID, Sequence: sequence, At: at,
+		Queues:          snapshot,
+		LocalReady:      result.Observation.Capacity.LocalReady,
+		CloudReady:      result.Observation.Capacity.CloudReady,
+		LocalPending:    result.Observation.Capacity.LocalPending,
+		CloudPending:    result.Observation.Capacity.CloudPending,
+		Action:          result.Decision.Action,
+		PlanLocal:       result.Decision.Plan.LocalExecutors,
+		PlanCloud:       result.Decision.Plan.CloudExecutors,
+		Reason:          result.Decision.Reason,
+		Constraint:      result.Decision.Constraint,
+		SettingsVersion: result.Decision.SettingsVersion,
+		BreachExpected:  result.Decision.Projection.BreachExpected,
+		Completed:       progress.Completed,
+		Breached:        progress.Breached,
+	}
+}
+
+// accumulate adds one cycle to the running totals.
+//
+// Executor-seconds are charged on what was ready during the interval, not on
+// what was planned: capacity that spent the interval starting up did no work,
+// and billing it would overstate the cost of every burst.
+func accumulate(metrics *domain.Metrics, cycle domain.Cycle, interval time.Duration) {
+	metrics.Cycles++
+	if cycle.Action != "" && cycle.Action != "maintain" {
+		metrics.ScalingActions++
+	}
+
+	seconds := interval.Seconds()
+	metrics.LocalExecutorSeconds += float64(cycle.LocalReady) * seconds
+	metrics.CloudExecutorSeconds += float64(cycle.CloudReady) * seconds
+
+	metrics.PeakLocalExecutors = maxInt(metrics.PeakLocalExecutors, cycle.LocalReady+cycle.LocalPending)
+	metrics.PeakCloudExecutors = maxInt(metrics.PeakCloudExecutors, cycle.CloudReady+cycle.CloudPending)
+}
+
+func finalise(metrics *domain.Metrics, stats queue.Stats) {
+	metrics.JobsSubmitted = stats.Submitted
+	metrics.JobsCompleted = stats.Completed
+	metrics.SLABreaches = stats.Breached
+	metrics.MeanWaitSeconds = stats.MeanWaitSeconds
+	metrics.P95WaitSeconds = stats.P95WaitSeconds
+	metrics.MaxWaitSeconds = stats.MaxWaitSeconds
+	metrics.PeakQueueDepth = stats.PeakDepth
+
+	if stats.Completed > 0 {
+		metrics.BreachRate = float64(stats.Breached) / float64(stats.Completed)
+	}
+}
+
+// settingNumber pulls one numeric field out of a settings patch, if it names
+// one.
+func settingNumber(settings json.RawMessage, field string) *float64 {
+	if len(settings) == 0 {
+		return nil
+	}
+	var document map[string]any
+	if err := json.Unmarshal(settings, &document); err != nil {
+		return nil
+	}
+	value, ok := document[field].(float64)
+	if !ok {
+		return nil
+	}
+	return &value
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}

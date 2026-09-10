@@ -255,6 +255,25 @@ func (c *Client) ApplySettings(ctx context.Context, id string, patch json.RawMes
 	return reply, err
 }
 
+// Status is a target's last cycle, which is how a live run watches a target
+// it deliberately does not drive.
+type Status struct {
+	ID              string    `json:"id"`
+	Kind            string    `json:"kind"`
+	Mode            string    `json:"mode"`
+	SettingsVersion int64     `json:"settings_version"`
+	LastDecision    *Decision `json:"last_decision,omitempty"`
+	LastError       string    `json:"last_error,omitempty"`
+	LastCycleAt     time.Time `json:"last_cycle_at,omitempty"`
+}
+
+// TargetStatus reads what a target last did.
+func (c *Client) TargetStatus(ctx context.Context, id string) (Status, error) {
+	var reply Status
+	err := c.do(ctx, http.MethodGet, "/v1/targets/"+url.PathEscape(id)+"/status", nil, nil, &reply)
+	return reply, err
+}
+
 // Cycle asks for one decision. This is the call a run is built out of.
 func (c *Client) Cycle(ctx context.Context, id string, request CycleRequest) (CycleResult, error) {
 	var reply CycleResult
