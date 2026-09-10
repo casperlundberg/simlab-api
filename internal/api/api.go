@@ -204,54 +204,33 @@ func (s *server) getScenario(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, scenario)
 }
 
-// scenarioRequest is a scenario on the wire. Durations are seconds, matching
-// the autoscaler's contract, because these are typed by hand.
-type scenarioRequest struct {
-	ID              string             `json:"id"`
-	MineID          string             `json:"mine_id"`
-	Name            string             `json:"name"`
-	DurationSeconds float64            `json:"duration_seconds"`
-	JobSeconds      float64            `json:"job_seconds"`
-	Seed            int64              `json:"seed"`
-	PriorityMix     map[string]float64 `json:"priority_mix"`
-	Bursts          []burstRequest     `json:"bursts,omitempty"`
-	Description     string             `json:"description,omitempty"`
-}
-
-type burstRequest struct {
-	AtSeconds              float64 `json:"at_seconds"`
-	Magnitude              float64 `json:"magnitude"`
-	AftershockDecaySeconds float64 `json:"aftershock_decay_seconds"`
-}
-
 func (s *server) saveScenario(w http.ResponseWriter, r *http.Request) {
-	var request scenarioRequest
-	if err := decode(r, &request); err != nil {
+	// Decoded straight into the domain type, which now converts both
+	// directions. A separate request struct only ever covered one, and that is
+	// how a response ended up rendering nanoseconds for a field the request
+	// took in seconds.
+	var scenario domain.Scenario
+	if err := decode(r, &scenario); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if id := r.PathValue("id"); id != "" {
-		request.ID = id
+		scenario.ID = id
 	}
-	if request.ID == "" {
+	if scenario.ID == "" {
 		id, err := newID("scn")
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		request.ID = id
+		scenario.ID = id
 	}
-	if request.Seed == 0 {
+	if scenario.Seed == 0 {
 		// A scenario without a seed is not reproducible, and a caller who did
 		// not think about it should still get a run that can be repeated.
-		request.Seed = time.Now().UnixNano()
+		scenario.Seed = time.Now().UnixNano()
 	}
 
-	scenario, err := request.toDomain()
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
 	if err := s.Store.SaveScenario(r.Context(), scenario); err != nil {
 		writeStoreError(w, err)
 		return
@@ -265,45 +244,12 @@ func (s *server) saveScenario(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, saved)
 }
 
-func (r scenarioRequest) toDomain() (domain.Scenario, error) {
-	mix := map[domain.Priority]float64{}
-	for key, weight := range r.PriorityMix {
-		priority, err := strconv.Atoi(key)
-		if err != nil {
-			return domain.Scenario{}, fmt.Errorf("priority_mix has the key %q, which is not "+
-				"a priority level", key)
-		}
-		mix[domain.Priority(priority)] = weight
-	}
-
-	scenario := domain.Scenario{
-		ID: r.ID, MineID: r.MineID, Name: r.Name,
-		Duration:    seconds(r.DurationSeconds),
-		JobSeconds:  r.JobSeconds,
-		Seed:        r.Seed,
-		PriorityMix: mix,
-		Description: r.Description,
-	}
-	for _, burst := range r.Bursts {
-		scenario.Bursts = append(scenario.Bursts, domain.Burst{
-			At:              seconds(burst.AtSeconds),
-			Magnitude:       burst.Magnitude,
-			AftershockDecay: seconds(burst.AftershockDecaySeconds),
-		})
-	}
-	return scenario, nil
-}
-
 func (s *server) deleteScenario(w http.ResponseWriter, r *http.Request) {
 	if err := s.Store.DeleteScenario(r.Context(), r.PathValue("id")); err != nil {
 		writeStoreError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-func seconds(value float64) time.Duration {
-	return time.Duration(value * float64(time.Second))
 }
 
 func decode(r *http.Request, into any) error {

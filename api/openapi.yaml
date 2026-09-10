@@ -529,7 +529,11 @@ components:
         status: { type: string, enum: [pending, running, completed, failed, cancelled] }
         simulated_start: { type: string, format: date-time }
         time_compression: { type: number }
-        decision_interval: { type: integer, description: Nanoseconds, as Go renders a duration. }
+        decision_interval_seconds:
+          type: number
+          description: |
+            Seconds, like every other duration in this API. A response can be
+            sent straight back as a request without conversion.
         started_at: { type: string, format: date-time }
         finished_at: { type: string, format: date-time }
         error: { type: string }

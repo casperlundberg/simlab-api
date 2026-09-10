@@ -60,7 +60,7 @@ func (s *server) createRun(w http.ResponseWriter, r *http.Request) {
 		DecisionInterval: defaultDecisionInterval,
 	}
 	if request.DecisionIntervalSeconds > 0 {
-		created.DecisionInterval = seconds(request.DecisionIntervalSeconds)
+		created.DecisionInterval = time.Duration(request.DecisionIntervalSeconds * float64(time.Second))
 	}
 
 	if created.Mode == domain.ModeSimulation {

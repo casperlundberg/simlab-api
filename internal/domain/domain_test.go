@@ -1,6 +1,7 @@
 package domain_test
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -158,5 +159,81 @@ func TestTerminalStatuses(t *testing.T) {
 		if got := status.Terminal(); got != want {
 			t.Errorf("%q.Terminal() = %v, want %v", status, got, want)
 		}
+	}
+}
+
+// A client has to be able to send back what it was given. Accepting
+// `duration_seconds` and returning nanoseconds means it cannot, and that
+// asymmetry is what an end-to-end run surfaced.
+func TestAScenarioRoundTripsThroughItsOwnWireFormat(t *testing.T) {
+	original := validScenario()
+
+	encoded, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("Marshal() = %v", err)
+	}
+
+	var generic map[string]any
+	if err := json.Unmarshal(encoded, &generic); err != nil {
+		t.Fatalf("Unmarshal to map = %v", err)
+	}
+	if got, want := generic["duration_seconds"], 6*3600.0; got != want {
+		t.Errorf("duration_seconds = %v, want %v", got, want)
+	}
+	bursts, _ := generic["bursts"].([]any)
+	if len(bursts) != 1 {
+		t.Fatalf("bursts = %#v, want one", generic["bursts"])
+	}
+	if burst, _ := bursts[0].(map[string]any); burst["at_seconds"] != 3600.0 {
+		t.Errorf("burst at_seconds = %v, want 3600", burst["at_seconds"])
+	}
+
+	var back domain.Scenario
+	if err := json.Unmarshal(encoded, &back); err != nil {
+		t.Fatalf("Unmarshal back = %v", err)
+	}
+	if back.Duration != original.Duration || back.JobSeconds != original.JobSeconds ||
+		back.Seed != original.Seed {
+		t.Errorf("round trip = %+v, want %+v", back, original)
+	}
+	if len(back.Bursts) != 1 || back.Bursts[0].At != time.Hour ||
+		back.Bursts[0].AftershockDecay != 3*time.Hour {
+		t.Errorf("bursts round trip = %+v", back.Bursts)
+	}
+	if back.PriorityMix[domain.PriorityPick] != original.PriorityMix[domain.PriorityPick] {
+		t.Errorf("priority mix round trip = %v", back.PriorityMix)
+	}
+}
+
+func TestARunRoundTripsWithItsIntervalInSeconds(t *testing.T) {
+	original := validRun()
+
+	encoded, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("Marshal() = %v", err)
+	}
+
+	var generic map[string]any
+	if err := json.Unmarshal(encoded, &generic); err != nil {
+		t.Fatalf("Unmarshal to map = %v", err)
+	}
+	if got, want := generic["decision_interval_seconds"], 15.0; got != want {
+		t.Errorf("decision_interval_seconds = %v, want %v", got, want)
+	}
+
+	var back domain.Run
+	if err := json.Unmarshal(encoded, &back); err != nil {
+		t.Fatalf("Unmarshal back = %v", err)
+	}
+	if back.DecisionInterval != original.DecisionInterval {
+		t.Errorf("DecisionInterval round trip = %v, want %v",
+			back.DecisionInterval, original.DecisionInterval)
+	}
+}
+
+func TestAPriorityMixKeyThatIsNotALevelIsRefused(t *testing.T) {
+	err := json.Unmarshal([]byte(`{"priority_mix":{"urgent":1}}`), &domain.Scenario{})
+	if err == nil || !strings.Contains(err.Error(), "urgent") {
+		t.Errorf("Unmarshal() = %v, want the bad key named", err)
 	}
 }
