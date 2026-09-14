@@ -313,3 +313,35 @@ func TestNegativeExecutorCountsAreTreatedAsNone(t *testing.T) {
 		t.Errorf("Advance() with -5 executors completed %d jobs", got.Completed)
 	}
 }
+
+// Capacity dropping while long jobs are in flight is the ordinary case, not an
+// exotic one — it is what every scale-down looks like. Work already under way
+// has to survive it. A job silently dropped is never completed and never
+// breaches, so it flatters the controller twice over and the run no longer
+// accounts for every job it admitted.
+func TestWorkInProgressSurvivesAnIntervalTooSmallToTouchAllOfIt(t *testing.T) {
+	// Three ten-minute jobs and three executors: after a minute all three are
+	// under way and none is anywhere near done.
+	jobs := []workload.Job{
+		job(0, domain.PriorityPick, 600),
+		job(0, domain.PriorityPick, 600),
+		job(0, domain.PriorityPick, 600),
+	}
+	q := queue.New(jobs, deadlines())
+	q.Advance(time.Minute, 3)
+
+	// Now the fleet drops to one. That minute of budget covers only the first
+	// of the three; the other two are untouched, which is not the same as gone.
+	q.Advance(2*time.Minute, 1)
+
+	// Give it far more time and capacity than the work needs.
+	for at := 3 * time.Minute; at <= time.Hour && !q.Done(); at += time.Minute {
+		q.Advance(at, 10)
+	}
+
+	stats := q.Stats()
+	if stats.Completed != stats.Submitted {
+		t.Errorf("Completed = %d of %d submitted: work in progress was dropped when "+
+			"the interval's budget ran out before reaching it", stats.Completed, stats.Submitted)
+	}
+}

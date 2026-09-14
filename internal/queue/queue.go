@@ -197,7 +197,18 @@ func (s *Simulator) serve(interval float64, executors int) int {
 	// Work already in progress comes first: an executor that has started a job
 	// stays on it.
 	stillRunning := s.running[:0]
-	for _, item := range s.running {
+	for i, item := range s.running {
+		if budget <= 0 {
+			// The budget is spent, but the work still in progress is not
+			// finished — it is merely untouched this interval, which is what
+			// a scale-down looks like from in here. It has to be carried
+			// forward: dropping it loses those jobs outright, never completed
+			// and never breaching, in a run that claims to account for every
+			// job it admitted.
+			stillRunning = append(stillRunning, s.running[i:]...)
+			break
+		}
+
 		work := math.Min(math.Min(interval, item.remaining), budget)
 		item.remaining -= work
 		budget -= work
@@ -208,9 +219,6 @@ func (s *Simulator) serve(interval float64, executors int) int {
 			continue
 		}
 		stillRunning = append(stillRunning, item)
-		if budget <= 0 {
-			break
-		}
 	}
 	s.running = stillRunning
 
