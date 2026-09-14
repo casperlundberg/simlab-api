@@ -351,10 +351,9 @@ func TestARunInFlightCannotBeDeleted(t *testing.T) {
 	runID, _ := decodeBody(t, resp)["id"].(string)
 	t.Cleanup(func() { _ = f.manager.Cancel(runID) })
 
-	deadline := time.Now().Add(3 * time.Second)
-	for !f.manager.IsActive(runID) && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
+	// No waiting for the run to become active: the handler calls Manager.Start
+	// before it writes the 202, and Start registers the run before it returns.
+	// runner.TestARunIsInFlightAsSoonAsStartReturns holds that.
 
 	if got := f.do(t, http.MethodDelete, "/api/runs/"+runID, nil); got.StatusCode != http.StatusConflict {
 		t.Errorf("DELETE a running run = %d, want 409", got.StatusCode)
@@ -371,10 +370,9 @@ func TestARunCanBeCancelled(t *testing.T) {
 	})
 	runID, _ := decodeBody(t, resp)["id"].(string)
 
-	deadline := time.Now().Add(3 * time.Second)
-	for !f.manager.IsActive(runID) && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
+	// No waiting for the run to become active: the handler calls Manager.Start
+	// before it writes the 202, and Start registers the run before it returns.
+	// runner.TestARunIsInFlightAsSoonAsStartReturns holds that.
 
 	if got := f.do(t, http.MethodPost, "/api/runs/"+runID+"/cancel", nil); got.StatusCode != http.StatusAccepted {
 		t.Fatalf("POST cancel = %d", got.StatusCode)
@@ -539,17 +537,27 @@ func TestAMalformedBodyIs400(t *testing.T) {
 func waitForRun(t *testing.T, f *fixture, runID string, want domain.RunStatus) {
 	t.Helper()
 
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		stored, err := f.store.Run(context.Background(), runID)
-		if err == nil && stored.Status == want {
-			return
-		}
-		if err == nil && stored.Status.Terminal() && stored.Status != want {
-			t.Fatalf("run %q ended as %q, want %q: %s", runID, stored.Status, want, stored.Error)
-		}
-		time.Sleep(20 * time.Millisecond)
+	// Wait on the run itself rather than polling the database. Manager.Done
+	// closes when the run has unwound, and the engine records a run's terminal
+	// status before it publishes the matching event, so by the time this
+	// returns the row is already there to read.
+	//
+	// The event stream deliberately cannot be used for this: Publish drops
+	// events for a subscriber that has fallen behind so a run never slows down
+	// for a watcher, which makes the terminal event a notification rather than
+	// a promise. The timer below is a failure bound, not pacing.
+	select {
+	case <-f.manager.Done(runID):
+	case <-time.After(30 * time.Second):
+		stored, _ := f.store.Run(context.Background(), runID)
+		t.Fatalf("run %q was still in flight after 30s; it is %q", runID, stored.Status)
 	}
-	stored, _ := f.store.Run(context.Background(), runID)
-	t.Fatalf("run %q did not reach %q; it is %q", runID, want, stored.Status)
+
+	stored, err := f.store.Run(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("reading run %q once it had finished: %v", runID, err)
+	}
+	if stored.Status != want {
+		t.Fatalf("run %q ended as %q, want %q: %s", runID, stored.Status, want, stored.Error)
+	}
 }

@@ -18,25 +18,46 @@ import (
 // ErrAlreadyRunning is returned when a run is asked to start twice.
 var ErrAlreadyRunning = errors.New("this run is already in flight")
 
+// Executor is the thing a manager runs in the background. *run.Engine is the
+// one the service uses.
+//
+// It is an interface rather than the concrete engine because the manager's own
+// behaviour is worth checking on its own: what counts as in flight, what a
+// second Start does, when a run stops being active, whether Shutdown really
+// waits. Answering those through a real engine means an autoscaler, a
+// database and a replayed workload, and then the thing under test is the
+// slowest part of the answer.
+type Executor interface {
+	Execute(ctx context.Context, spec run.Spec) (domain.Metrics, error)
+}
+
 // Manager starts runs and keeps track of them.
 type Manager struct {
 	store  *store.Store
-	engine *run.Engine
+	engine Executor
 	log    *slog.Logger
 
 	mu     sync.Mutex
 	active map[string]context.CancelFunc
 
-	// finished lets tests and shutdown wait for in-flight runs.
+	// done carries one channel per in-flight run, closed when it unwinds. See
+	// Done for why the event stream cannot be used for this.
+	done map[string]chan struct{}
+
+	// finished lets Shutdown wait for in-flight runs.
 	wg sync.WaitGroup
 }
 
 // New builds a manager.
-func New(store *store.Store, engine *run.Engine, log *slog.Logger) *Manager {
+func New(store *store.Store, engine Executor, log *slog.Logger) *Manager {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Manager{store: store, engine: engine, log: log, active: map[string]context.CancelFunc{}}
+	return &Manager{
+		store: store, engine: engine, log: log,
+		active: map[string]context.CancelFunc{},
+		done:   map[string]chan struct{}{},
+	}
 }
 
 // Start executes a run in the background and returns as soon as it is under
@@ -55,6 +76,7 @@ func (m *Manager) Start(spec run.Spec) error {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	m.active[spec.Run.ID] = cancel
+	m.done[spec.Run.ID] = make(chan struct{})
 	m.mu.Unlock()
 
 	m.wg.Add(1)
@@ -63,6 +85,13 @@ func (m *Manager) Start(spec run.Spec) error {
 		defer func() {
 			m.mu.Lock()
 			delete(m.active, spec.Run.ID)
+			if done, waiting := m.done[spec.Run.ID]; waiting {
+				delete(m.done, spec.Run.ID)
+				// Closed last, and while still holding the lock, so that
+				// anything woken by it sees a manager that already agrees the
+				// run is no longer active.
+				close(done)
+			}
 			m.mu.Unlock()
 			cancel()
 		}()
@@ -112,6 +141,27 @@ func (m *Manager) IsActive(runID string) bool {
 	defer m.mu.Unlock()
 	_, running := m.active[runID]
 	return running
+}
+
+// Done returns a channel that closes when this run is no longer in flight, or
+// an already-closed one if it never was.
+//
+// Shutdown waits for every run to unwind; this is the same guarantee for one
+// of them. It exists because the event stream cannot give it: Publish drops
+// events for a subscriber that has fallen behind, deliberately, so that a run
+// never slows down for something watching it. That makes the terminal event a
+// notification and not a promise. This is the promise — and the run's status
+// is then read back from the database, which is the record.
+func (m *Manager) Done(runID string) <-chan struct{} {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if done, waiting := m.done[runID]; waiting {
+		return done
+	}
+	closed := make(chan struct{})
+	close(closed)
+	return closed
 }
 
 // Shutdown stops every run and waits for them to unwind.
