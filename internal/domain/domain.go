@@ -49,6 +49,14 @@ type Mine struct {
 	// BackgroundRate is events per hour when nothing unusual is happening.
 	BackgroundRate float64 `json:"background_rate_per_hour"`
 
+	// Layout is where the sensors are, and the volume they watch.
+	//
+	// Optional. A mine given only a sensor count still works: a layout is
+	// derived from that count and the scenario's seed, so every scenario
+	// written before geometry existed keeps replaying identically. Set it to
+	// state a real array rather than accept a generated one.
+	Layout *Layout `json:"layout,omitempty"`
+
 	Description string    `json:"description,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
 }
@@ -91,6 +99,15 @@ type Burst struct {
 	// AftershockDecay is how long the aftershock sequence takes to fall back
 	// towards background. Zero means no aftershocks.
 	AftershockDecay time.Duration `json:"aftershock_decay"`
+
+	// Epicentre is where in the rock it happened. Optional: unset, one is
+	// drawn from the seed.
+	//
+	// This is ground truth. It is what the simulator knows and the mine does
+	// not: the mine sees only picks, and works back to an estimate. Nothing
+	// that decides processing order may read this, or the result would be
+	// assuming what it set out to show.
+	Epicentre *Point `json:"epicentre,omitempty"`
 }
 
 // Scenario is a workload to replay: a shape, a duration, and a seed.
@@ -111,6 +128,17 @@ type Scenario struct {
 
 	// JobSeconds is how long one job takes an executor to run.
 	JobSeconds float64 `json:"job_seconds"`
+
+	// PickJitter is the standard deviation of pick error: the difference
+	// between when a wave reached a sensor and when the instrument said it
+	// did. It is the dial that controls how uncertain the mine's epicentre
+	// estimates are.
+	//
+	// A parameter rather than a constant because the question worth sweeping
+	// is how good a location has to be before ordering by it stops helping.
+	// Zero gives exact picks, which is a useful upper bound and not a
+	// realistic instrument.
+	PickJitter time.Duration `json:"pick_jitter"`
 
 	// Seed makes a scenario reproducible. Two runs of the same scenario
 	// replay exactly the same jobs, which is what makes comparing two
