@@ -47,6 +47,13 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.database.existingSecret | default (include "simlab-api.secretName" .) }}
                   key: database-url
+            {{- if or .Values.auth.existingSecret .Values.auth.token }}
+            - name: SIMLAB_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.existingSecret | default (include "simlab-api.secretName" .) }}
+                  key: simlab-api-token
+            {{- end }}
             {{- if or .Values.autoscaler.existingSecret .Values.autoscaler.token }}
             - name: SIMLAB_AUTOSCALER_TOKEN
               valueFrom:

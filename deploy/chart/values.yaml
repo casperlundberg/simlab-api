@@ -15,6 +15,22 @@ service:
   type: ClusterIP
   port: 8081
 
+# The token guarding *this* service's API.
+#
+# Distinct from autoscaler.token below, which is the credential this service
+# presents when calling the autoscaler. This one is what callers must present
+# to it. They are different directions of a different relationship and should
+# not be assumed to be the same string.
+#
+# It matters because this is the service that gets published: simlab-web's
+# nginx proxies /api straight here. Left empty the API is open to anyone who
+# can reach the ingress, and since this service holds the autoscaler's token,
+# that reaches an authenticated autoscaler.
+auth:
+  # existingSecret holding a "simlab-api-token" key. Preferred anywhere real.
+  existingSecret: ""
+  token: ""
+
 # The autoscaler this Simlab drives.
 autoscaler:
   # url defaults to the autoscaler service in this same namespace, which is the

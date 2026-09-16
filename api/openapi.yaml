@@ -45,6 +45,7 @@ tags:
 paths:
   /healthz:
     get:
+      security: []   # a kubelet cannot carry a credential
       tags: [health]
       summary: Liveness probe
       responses:
@@ -52,6 +53,7 @@ paths:
 
   /readyz:
     get:
+      security: []   # a kubelet cannot carry a credential
       tags: [health]
       summary: Readiness probe
       description: Fails while the database is unreachable, and reports how many runs are in flight.
@@ -394,7 +396,27 @@ paths:
         "200": { description: Status., content: { application/json: { schema: { type: object } } } }
         "404": { $ref: "#/components/responses/NotFound" }
 
+# Applies to every operation below. The probes are exempt, and say so
+# individually with `security: []`.
+security:
+  - bearerAuth: []
+
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Required on every endpoint except the probes.
+
+        This service is the one that is published — simlab-web's nginx proxies
+        `/api` straight to it — and it holds the autoscaler's own token and
+        proxies to it. An unauthenticated call here therefore reaches an
+        authenticated autoscaler, and through it whatever infrastructure a
+        registered target points at.
+
+        Set `SIMLAB_API_TOKEN` to require it. Left empty the API is open, which
+        only suits a development install that nothing can reach.
   parameters:
     ID:
       name: id

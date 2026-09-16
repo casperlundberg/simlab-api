@@ -29,6 +29,7 @@ type Config struct {
 	// would produce a service that starts happily and fails every run.
 	AutoscalerURL   string
 	AutoscalerToken string
+	APIToken        string
 
 	// StaticDir, when set, is a directory of built frontend assets served
 	// alongside the API, so one container can serve both.
@@ -45,6 +46,7 @@ func LoadConfig(lookup func(string) string) (Config, error) {
 		DatabaseURL:     lookup("SIMLAB_DATABASE_URL"),
 		AutoscalerURL:   lookup("SIMLAB_AUTOSCALER_URL"),
 		AutoscalerToken: lookup("SIMLAB_AUTOSCALER_TOKEN"),
+		APIToken:        lookup("SIMLAB_API_TOKEN"),
 		StaticDir:       lookup("SIMLAB_STATIC_DIR"),
 		RequestTimeout:  30 * time.Second,
 		LogLevel:        slog.LevelInfo,
@@ -96,6 +98,14 @@ func Run(ctx context.Context, cfg Config) error {
 		logger.Warn("no autoscaler token is set; this only works if the autoscaler is " +
 			"itself unauthenticated")
 	}
+	if cfg.APIToken == "" {
+		// Not fatal: a development install with nothing to protect should run
+		// without ceremony. It is said out loud because this service is the
+		// one that gets published, and because it holds the autoscaler's token
+		// and proxies to it — so an open API here is an open door to whatever
+		// that autoscaler can reach.
+		logger.Warn("SIMLAB_API_TOKEN is not set; this API is open to anyone who can reach it")
+	}
 
 	hub := events.New()
 	manager := runner.New(db, run.New(client, db, hub), logger)
@@ -104,7 +114,7 @@ func Run(ctx context.Context, cfg Config) error {
 		Addr: cfg.Address,
 		Handler: api.New(api.Options{
 			Store: db, Manager: manager, Autoscaler: client, Hub: hub,
-			Logger: logger, Static: cfg.StaticDir,
+			Logger: logger, Static: cfg.StaticDir, Token: cfg.APIToken,
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		// No write timeout: the event stream is a long-lived response by

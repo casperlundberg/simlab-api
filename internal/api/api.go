@@ -8,6 +8,7 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,6 +29,48 @@ import (
 
 const maxBodyBytes = 1 << 20
 
+// guarded wraps a handler in the bearer-token check.
+func (s *server) guarded(next http.HandlerFunc) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.Token != "" && !s.authorised(r) {
+			writeError(w, http.StatusUnauthorized, "a bearer token is required")
+			return
+		}
+		next(w, r)
+	})
+}
+
+func (s *server) authorised(r *http.Request) bool {
+	const prefix = "Bearer "
+
+	if header := r.Header.Get("Authorization"); len(header) > len(prefix) && header[:len(prefix)] == prefix {
+		return s.matches(header[len(prefix):])
+	}
+
+	// A token in the query string, accepted on reads only.
+	//
+	// The event streams are consumed by EventSource, which cannot set request
+	// headers — there is no header to put a bearer token in. The alternatives
+	// are a cookie, which brings CSRF with it, or leaving the streams open,
+	// which is what this change exists to stop.
+	//
+	// Restricted to GET so that a URL, which is the thing that ends up in
+	// access logs, browser history and referrers, can never authorise a write.
+	// Treat any log recording query strings as holding credentials.
+	if r.Method == http.MethodGet {
+		if token := r.URL.Query().Get("token"); token != "" {
+			return s.matches(token)
+		}
+	}
+	return false
+}
+
+// matches compares in constant time, so a caller cannot learn the token one
+// byte at a time from how long the comparison takes.
+func (s *server) matches(candidate string) bool {
+	return subtle.ConstantTimeCompare([]byte(candidate), []byte(s.Token)) == 1
+}
+
 // Options is everything the HTTP layer needs.
 type Options struct {
 	Store      *store.Store
@@ -35,6 +78,20 @@ type Options struct {
 	Autoscaler *autoscaler.Client
 	Hub        *events.Hub
 	Logger     *slog.Logger
+
+	// Token, when set, is required as a bearer token on every endpoint except
+	// the probes.
+	//
+	// This service is the one that gets published. simlab-web's nginx proxies
+	// /api straight here, so without a token anyone who can reach the ingress
+	// can drive it — and since this service holds the autoscaler's token and
+	// proxies to it, that reaches an authenticated autoscaler, and through it
+	// whatever infrastructure a target points at.
+	//
+	// Empty leaves the API open, which is what a development install with no
+	// token configured needs. The umbrella chart refuses to render an
+	// arrangement where the autoscaler is guarded and this is not.
+	Token string
 
 	// Static, when set, is a directory of built frontend assets served for any
 	// path the API does not claim. It lets one container serve both, which is
@@ -51,43 +108,47 @@ type server struct {
 type route struct {
 	Method  string
 	Path    string
+	Public  bool
 	Handler func(*server) http.HandlerFunc
 }
 
 var routes = []route{
-	{http.MethodGet, "/healthz", func(s *server) http.HandlerFunc { return s.health }},
-	{http.MethodGet, "/readyz", func(s *server) http.HandlerFunc { return s.ready }},
+	// Probes are unauthenticated. A kubelet cannot carry a credential, and
+	// requiring one would have the pod killed for being unauthenticated rather
+	// than unhealthy. Everything else is guarded.
+	{http.MethodGet, "/healthz", true, func(s *server) http.HandlerFunc { return s.health }},
+	{http.MethodGet, "/readyz", true, func(s *server) http.HandlerFunc { return s.ready }},
 
-	{http.MethodGet, "/api/mines", func(s *server) http.HandlerFunc { return s.listMines }},
-	{http.MethodPost, "/api/mines", func(s *server) http.HandlerFunc { return s.saveMine }},
-	{http.MethodGet, "/api/mines/{id}", func(s *server) http.HandlerFunc { return s.getMine }},
-	{http.MethodPut, "/api/mines/{id}", func(s *server) http.HandlerFunc { return s.saveMine }},
-	{http.MethodDelete, "/api/mines/{id}", func(s *server) http.HandlerFunc { return s.deleteMine }},
+	{http.MethodGet, "/api/mines", false, func(s *server) http.HandlerFunc { return s.listMines }},
+	{http.MethodPost, "/api/mines", false, func(s *server) http.HandlerFunc { return s.saveMine }},
+	{http.MethodGet, "/api/mines/{id}", false, func(s *server) http.HandlerFunc { return s.getMine }},
+	{http.MethodPut, "/api/mines/{id}", false, func(s *server) http.HandlerFunc { return s.saveMine }},
+	{http.MethodDelete, "/api/mines/{id}", false, func(s *server) http.HandlerFunc { return s.deleteMine }},
 
-	{http.MethodGet, "/api/scenarios", func(s *server) http.HandlerFunc { return s.listScenarios }},
-	{http.MethodPost, "/api/scenarios", func(s *server) http.HandlerFunc { return s.saveScenario }},
-	{http.MethodGet, "/api/scenarios/{id}", func(s *server) http.HandlerFunc { return s.getScenario }},
-	{http.MethodPut, "/api/scenarios/{id}", func(s *server) http.HandlerFunc { return s.saveScenario }},
-	{http.MethodDelete, "/api/scenarios/{id}", func(s *server) http.HandlerFunc { return s.deleteScenario }},
+	{http.MethodGet, "/api/scenarios", false, func(s *server) http.HandlerFunc { return s.listScenarios }},
+	{http.MethodPost, "/api/scenarios", false, func(s *server) http.HandlerFunc { return s.saveScenario }},
+	{http.MethodGet, "/api/scenarios/{id}", false, func(s *server) http.HandlerFunc { return s.getScenario }},
+	{http.MethodPut, "/api/scenarios/{id}", false, func(s *server) http.HandlerFunc { return s.saveScenario }},
+	{http.MethodDelete, "/api/scenarios/{id}", false, func(s *server) http.HandlerFunc { return s.deleteScenario }},
 
-	{http.MethodGet, "/api/runs", func(s *server) http.HandlerFunc { return s.listRuns }},
-	{http.MethodPost, "/api/runs", func(s *server) http.HandlerFunc { return s.createRun }},
-	{http.MethodGet, "/api/runs/{id}", func(s *server) http.HandlerFunc { return s.getRun }},
-	{http.MethodDelete, "/api/runs/{id}", func(s *server) http.HandlerFunc { return s.deleteRun }},
-	{http.MethodPost, "/api/runs/{id}/cancel", func(s *server) http.HandlerFunc { return s.cancelRun }},
-	{http.MethodGet, "/api/runs/{id}/cycles", func(s *server) http.HandlerFunc { return s.runCycles }},
-	{http.MethodGet, "/api/runs/{id}/metrics", func(s *server) http.HandlerFunc { return s.runMetrics }},
-	{http.MethodGet, "/api/runs/{id}/events", func(s *server) http.HandlerFunc { return s.runEvents }},
-	{http.MethodGet, "/api/events", func(s *server) http.HandlerFunc { return s.allEvents }},
+	{http.MethodGet, "/api/runs", false, func(s *server) http.HandlerFunc { return s.listRuns }},
+	{http.MethodPost, "/api/runs", false, func(s *server) http.HandlerFunc { return s.createRun }},
+	{http.MethodGet, "/api/runs/{id}", false, func(s *server) http.HandlerFunc { return s.getRun }},
+	{http.MethodDelete, "/api/runs/{id}", false, func(s *server) http.HandlerFunc { return s.deleteRun }},
+	{http.MethodPost, "/api/runs/{id}/cancel", false, func(s *server) http.HandlerFunc { return s.cancelRun }},
+	{http.MethodGet, "/api/runs/{id}/cycles", false, func(s *server) http.HandlerFunc { return s.runCycles }},
+	{http.MethodGet, "/api/runs/{id}/metrics", false, func(s *server) http.HandlerFunc { return s.runMetrics }},
+	{http.MethodGet, "/api/runs/{id}/events", false, func(s *server) http.HandlerFunc { return s.runEvents }},
+	{http.MethodGet, "/api/events", false, func(s *server) http.HandlerFunc { return s.allEvents }},
 
-	{http.MethodGet, "/api/platforms", func(s *server) http.HandlerFunc { return s.listPlatforms }},
-	{http.MethodGet, "/api/targets", func(s *server) http.HandlerFunc { return s.listTargets }},
-	{http.MethodPost, "/api/targets", func(s *server) http.HandlerFunc { return s.createTarget }},
-	{http.MethodGet, "/api/targets/{id}", func(s *server) http.HandlerFunc { return s.getTarget }},
-	{http.MethodDelete, "/api/targets/{id}", func(s *server) http.HandlerFunc { return s.deleteTarget }},
-	{http.MethodGet, "/api/targets/{id}/settings", func(s *server) http.HandlerFunc { return s.getTargetSettings }},
-	{http.MethodPatch, "/api/targets/{id}/settings", func(s *server) http.HandlerFunc { return s.patchTargetSettings }},
-	{http.MethodGet, "/api/targets/{id}/status", func(s *server) http.HandlerFunc { return s.getTargetStatus }},
+	{http.MethodGet, "/api/platforms", false, func(s *server) http.HandlerFunc { return s.listPlatforms }},
+	{http.MethodGet, "/api/targets", false, func(s *server) http.HandlerFunc { return s.listTargets }},
+	{http.MethodPost, "/api/targets", false, func(s *server) http.HandlerFunc { return s.createTarget }},
+	{http.MethodGet, "/api/targets/{id}", false, func(s *server) http.HandlerFunc { return s.getTarget }},
+	{http.MethodDelete, "/api/targets/{id}", false, func(s *server) http.HandlerFunc { return s.deleteTarget }},
+	{http.MethodGet, "/api/targets/{id}/settings", false, func(s *server) http.HandlerFunc { return s.getTargetSettings }},
+	{http.MethodPatch, "/api/targets/{id}/settings", false, func(s *server) http.HandlerFunc { return s.patchTargetSettings }},
+	{http.MethodGet, "/api/targets/{id}/status", false, func(s *server) http.HandlerFunc { return s.getTargetStatus }},
 }
 
 // Routes is every endpoint served, for the contract test.
@@ -108,7 +169,12 @@ func New(options Options) http.Handler {
 
 	mux := http.NewServeMux()
 	for _, r := range routes {
-		mux.Handle(r.Method+" "+r.Path, r.Handler(s))
+		handler := r.Handler(s)
+		if r.Public {
+			mux.Handle(r.Method+" "+r.Path, handler)
+			continue
+		}
+		mux.Handle(r.Method+" "+r.Path, s.guarded(handler))
 	}
 	if options.Static != "" {
 		mux.Handle("/", spaHandler(options.Static))
