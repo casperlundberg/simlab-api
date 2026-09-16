@@ -15,6 +15,14 @@ import (
 
 // Priority is a job's urgency, matching the levels the autoscaler decides on.
 // Higher is more urgent.
+// JobID identifies one job within a run.
+//
+// It exists so the mine can say which piece of work its intent applies to.
+// Derived from the scenario's seed and the job's position, never from a clock
+// or a counter shared across runs: two runs of one scenario must produce the
+// same ids, or a comparison between them cannot line up job for job.
+type JobID int
+
 type Priority int
 
 // The priority levels this workload uses, named for what they mean in seismic

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/casperlundberg/simlab-api/internal/domain"
+	"github.com/casperlundberg/simlab-api/internal/orchestrator"
 	"github.com/casperlundberg/simlab-api/internal/workload"
 )
 
@@ -34,24 +35,13 @@ func (d Deadlines) For(priority domain.Priority) time.Duration {
 	return d.Default
 }
 
-// Progress is what one interval produced.
-type Progress struct {
-	Completed int
-	Breached  int
-}
+// Progress and Stats are the seam's types. Aliases rather than copies, so an
+// orchestrator adapter for a real system does not have to import this package
+// — which is the simulated implementation — to speak the interface.
+type Progress = orchestrator.Progress
 
 // Stats is what a whole run amounted to.
-type Stats struct {
-	Submitted int
-	Completed int
-	Breached  int
-
-	MeanWaitSeconds float64
-	P95WaitSeconds  float64
-	MaxWaitSeconds  float64
-
-	PeakDepth int
-}
+type Stats = orchestrator.Stats
 
 // queued is a job waiting for an executor.
 type queued struct {
@@ -423,4 +413,93 @@ func (s *Simulator) pruneEmptyLevels() {
 			delete(s.levels, priority)
 		}
 	}
+}
+
+// The simulated queue is one orchestrator among the intended several. Asserted
+// here so that a change to either side is a compile error rather than something
+// discovered when a real adapter is written.
+var _ orchestrator.Orchestrator = (*Simulator)(nil)
+
+// Kind names this implementation, as a platform adapter does.
+func (s *Simulator) Kind() string { return "simulation" }
+
+// Capabilities is what this queue admits being done to work already in it.
+//
+// Mutable priority is the one that matters: it is what the mine's intent needs,
+// and it is the capability a real orchestrator has to be checked for before a
+// result obtained here can be claimed to hold there.
+//
+// Preemption is deliberately absent. Most orchestrators only reorder what is
+// still waiting, and a long low-priority job that has already started will
+// finish first regardless of what happens to the queue behind it — which is
+// precisely the effect an operator notices, so modelling it away would flatter
+// the result.
+func (s *Simulator) Capabilities() orchestrator.Capabilities {
+	return orchestrator.Capabilities{
+		MutablePriority:     true,
+		PreemptsOnPromotion: false,
+	}
+}
+
+// Reprioritise applies the mine's intent to work that is still waiting.
+//
+// Work already running is reported as TooLate rather than changed. Without
+// preemption an executor that has started a job will finish it, so moving its
+// priority would alter which deadline it is judged against without altering
+// when it actually completes — the queue would report an improvement it did
+// not make.
+//
+// A job that has already been counted as breached stays counted. Promotion is
+// meant to prevent a missed deadline, not to erase one.
+func (s *Simulator) Reprioritise(at time.Duration, updates []orchestrator.PriorityUpdate) orchestrator.Applied {
+	applied := orchestrator.Applied{}
+
+	for _, update := range updates {
+		item, from, index := s.findWaiting(update.JobID)
+		if item == nil {
+			applied.TooLate++
+			continue
+		}
+		if from == update.Priority {
+			continue
+		}
+
+		s.levels[from] = append(s.levels[from][:index], s.levels[from][index+1:]...)
+		item.job.Priority = update.Priority
+		s.insertByArrival(update.Priority, item)
+		applied.Changed++
+	}
+	return applied
+}
+
+// findWaiting locates a job that has not yet been dispatched.
+func (s *Simulator) findWaiting(id domain.JobID) (*queued, domain.Priority, int) {
+	// Iterating the map is safe here because the search is exhaustive and its
+	// result does not depend on the order: a job is in exactly one level.
+	for priority, level := range s.levels {
+		for i, item := range level {
+			if item.job.ID == id {
+				return item, priority, i
+			}
+		}
+	}
+	return nil, 0, 0
+}
+
+// insertByArrival keeps a level FIFO by submission time, so a promoted job
+// takes its rightful place among work of its new priority rather than jumping
+// ahead of jobs that have been waiting at that level for longer.
+func (s *Simulator) insertByArrival(priority domain.Priority, item *queued) {
+	level := s.levels[priority]
+	at := len(level)
+	for i, existing := range level {
+		if existing.job.SubmittedAt > item.job.SubmittedAt {
+			at = i
+			break
+		}
+	}
+	level = append(level, nil)
+	copy(level[at+1:], level[at:])
+	level[at] = item
+	s.levels[priority] = level
 }

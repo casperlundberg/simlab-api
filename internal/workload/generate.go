@@ -40,6 +40,11 @@ const omoriExponent = 1.1
 
 // Job is one unit of work arriving at the queue.
 type Job struct {
+	// ID is this job's identity within the run, so the mine can direct intent
+	// at it after it has been submitted. Assigned by position once the jobs
+	// are ordered, which makes it a function of the seed alone.
+	ID domain.JobID
+
 	// SubmittedAt is the offset from the start of the scenario.
 	SubmittedAt time.Duration
 
@@ -108,6 +113,14 @@ func Generate(mine domain.Mine, scenario domain.Scenario) ([]Job, error) {
 					"too large to replay", maxJobs)
 			}
 		}
+	}
+
+	// Identity by position, assigned once the whole list exists. Jobs are
+	// appended in event order and never reordered here, so this is a function
+	// of the seed and nothing else — which is what lets two runs of one
+	// scenario be compared job for job.
+	for i := range jobs {
+		jobs[i].ID = domain.JobID(i)
 	}
 	return jobs, nil
 }
