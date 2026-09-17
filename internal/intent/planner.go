@@ -1,6 +1,7 @@
 package intent
 
 import (
+	"math"
 	"time"
 
 	"github.com/casperlundberg/simlab-api/internal/domain"
@@ -69,6 +70,19 @@ type eventWork struct {
 	// arrival order is what a real system receives before any pick has been
 	// processed.
 	triggers []domain.Point
+
+	// struck is who was nearest the event when it happened, measured from
+	// where intent last took it to be. Kept so it is measured once per
+	// position rather than every cycle.
+	struck struck
+}
+
+type struck struct {
+	measured bool
+	from     domain.Point
+	entity   string
+	distance float64
+	found    bool
 }
 
 type request struct {
@@ -136,7 +150,14 @@ func New(w workload.Workload, catalogue *workload.Catalogue, settings domain.Int
 }
 
 // Configure changes the settings the next plan is made under.
-func (p *Planner) Configure(settings domain.IntentSettings) { p.settings = settings }
+func (p *Planner) Configure(settings domain.IntentSettings) {
+	// Who counts as protected may have changed, and with it who was nearest
+	// each event when it happened.
+	for i := range p.events {
+		p.events[i].struck = struck{}
+	}
+	p.settings = settings
+}
 
 // Plan judges every event with work outstanding at a moment, and returns the
 // updates that would put its jobs where intent wants them, and every event
@@ -187,6 +208,12 @@ func (p *Planner) assess(i int, at time.Duration, paths []Path) domain.IntentTra
 	}
 	out := domain.IntentTransition{At: at, Basis: sighting.Basis}
 	entity, distance, found := Nearest(paths, sighting.At)
+	// Where people were when the event happened counts as much as where they
+	// are going: an event that shook someone is worth locating after they
+	// have walked away, since its location is where to look for them.
+	if hit := p.strikeOf(i, sighting.At); hit.found && (!found || hit.distance < distance) {
+		entity, distance, found = hit.entity, hit.distance, true
+	}
 	if found {
 		out.Entity, out.Distance = entity, distance
 	}
@@ -204,6 +231,26 @@ func (p *Planner) assess(i int, at time.Duration, paths []Path) domain.IntentTra
 	}
 	out.State = domain.EventKept
 	return out
+}
+
+// strikeOf is the protected entity nearest event i, taken to be at from, at
+// the moment the event happened.
+func (p *Planner) strikeOf(i int, from domain.Point) struck {
+	event := &p.events[i]
+	if event.struck.measured && event.struck.from == from {
+		return event.struck
+	}
+	hit := struck{measured: true, from: from, distance: math.Inf(1)}
+	for _, entity := range p.entities {
+		if !p.settings.Protects(entity.Kind) || len(entity.Track) == 0 {
+			continue
+		}
+		if d := entity.PositionAt(event.origin).DistanceTo(from); d < hit.distance {
+			hit.entity, hit.distance, hit.found = entity.ID, d, true
+		}
+	}
+	event.struck = hit
+	return hit
 }
 
 // sight is what intent knows about event i under the knowledge it is set to.
@@ -288,7 +335,9 @@ func (p *Planner) request(plan *Plan, i int, at time.Duration, state string) {
 			// Decay is final: work stays decayed whatever comes near its
 			// event. Switching intent off still puts it back.
 			want.priority, class = have.priority, domain.ClassDecayed
-		case have.moved:
+		case have.moved && s.Mode != domain.IntentOff:
+			// Intent switched off puts work back as it arrived, exemption
+			// included: nothing it did stands.
 			class = domain.ClassRestored
 		}
 		want.moved = want.moved || want.priority != submitted

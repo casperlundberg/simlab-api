@@ -13,15 +13,19 @@ simulation runs now decay work by default, and breaches are counted correctly.
   from its estimates, or from the truth as an oracle arm; optionally before a
   location exists, from the sensors that triggered. What is protected is every
   protected person and vehicle and where its planned route takes it over a
-  lookahead, in three dimensions. See `docs/intent.md`.
-- **Exemption from cloud burst.** Decayed or promoted work can be sent to the
+  lookahead, in three dimensions — and where each was when an event happened,
+  since an event that shook someone matters after they walk away. See
+  `docs/intent.md`.
+- **Exemption from cloud burst.** Decayed, promoted or restored work can be sent to the
   autoscaler as exempt: served, and counted when late, but never the reason
   cloud capacity is bought. Needs autoscaler 1.1.0 to take effect.
 - **Deadline origin.** A moved job's deadline is measured from its arrival, or
   optionally from the change.
 - **Restore.** Decayed work returns to its submitted priority when something
   protected comes within reach, unless `restore` is off; restored work is its
-  own class for exemption, because it often returns already late.
+  own class for exemption, because it often returns already late, and is
+  exempt by default. Without that, restores sent the autoscaler to its ceiling
+  and decay cost two-fifths more cloud time than no intent at all.
 - **Changing intent while a run is in flight**: `GET` and `PATCH
   /api/runs/{id}/intent`, with compare-and-swap. Every version that takes effect
   is recorded with its cycle, and replaying them as `intent_schedule` on a new
@@ -37,7 +41,7 @@ simulation runs now decay work by default, and breaches are counted correctly.
   without intent, `sla_breaches` equals `sla_breaches_as_submitted`, and counts
   for the same scenario differ from 1.x.
 - A run created without `intent` decays by default. Pass `"intent": {"mode":
-  "off"}` for the behaviour of 1.x.
+  "off"}` to leave every job at its submitted priority, as 1.x did.
 - `make db-up` waits for Postgres over TCP, not its socket.
 
 ## 1.0.0 — 2026-09-17

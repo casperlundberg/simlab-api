@@ -8,8 +8,14 @@ using what it knows about that to reorder work it has already queued.
 ## What is protected
 
 The protected volume is the union, over every protected person and vehicle, of
-where each is now and where its planned route takes it over the **lookahead**.
-An event threatens that volume when the ground motion it can cause reaches it.
+where each was when the event happened, where it is now, and where its planned
+route takes it over the **lookahead**. An event threatens that volume when the
+ground motion it can cause reaches it.
+
+Where people were when an event happened counts because an event that shook
+someone is worth locating after they have walked away: its location is where
+to look for them. Being near an event after it happened does not count; the
+ground motion was over by then.
 
 Ground motion comes from the Canadian Rockburst Support Handbook's scaling law
 (`internal/hazard`): `ppv = C*·√(10^(mN+1))/R`, falling as 1/R from the
@@ -35,10 +41,11 @@ every protected route.
 | `pre_location_magnitude` | 1.5 | The magnitude assumed before one is estimated. |
 | `deadline_from` | `arrival` | A moved job's deadline is measured from arrival, or from the change. |
 | `restore` | true | Decayed work returns when something protected comes within reach. False makes decay final. |
-| `burst_exempt` | none | `decayed`, `promoted` and/or `restored` work may not be the reason cloud is bought. |
+| `burst_exempt` | `restored` | `decayed`, `promoted` and/or `restored` work may not be the reason cloud is bought. |
 
 Decay is the default because it relaxes: it makes nothing more urgent. That is
-only wholly true of decay itself. Decayed work that is **restored** — because a
+only wholly true of decay itself, which is why restored work is exempt from
+cloud burst by default. Decayed work that is **restored** — because a
 vehicle is now heading towards its event — comes back to its submitted level
 having waited all along, and with deadlines measured from arrival it is often
 already late. To the autoscaler a waiting job that is already late is a breach

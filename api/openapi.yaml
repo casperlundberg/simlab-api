@@ -986,6 +986,7 @@ components:
         burst_exempt:
           type: array
           items: { type: string, enum: [decayed, promoted, restored] }
+          default: [restored]
           description: |
             Jobs, by what intent did to them, that may use capacity but may not
             be the reason cloud capacity is bought. Restored is back at its

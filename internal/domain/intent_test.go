@@ -26,8 +26,11 @@ func TestTheDefaultIntentDecaysOnlyAndIsValid(t *testing.T) {
 			t.Errorf("the default does not protect %s", kind)
 		}
 	}
-	if len(s.BurstExempt) != 0 {
-		t.Errorf("BurstExempt = %v, want nothing exempt unless an operator says so", s.BurstExempt)
+	// Restored work comes back already late; counted, each restore would be
+	// a breach no capacity avoids, and the scaling decay was meant not to
+	// cause.
+	if !reflect.DeepEqual(s.BurstExempt, []domain.IntentClass{domain.ClassRestored}) {
+		t.Errorf("BurstExempt = %v, want restored work exempt and nothing else", s.BurstExempt)
 	}
 }
 

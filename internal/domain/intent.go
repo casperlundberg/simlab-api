@@ -145,9 +145,16 @@ type IntentSettings struct {
 }
 
 // DefaultIntent is decay only, from estimates, protecting everyone and every
-// vehicle along the next five minutes of their route. Decay is the default
-// because it only ever relaxes: it cannot make work more urgent, so it cannot
-// trigger scaling that would not have happened anyway.
+// vehicle where they were when an event happened and along the next five
+// minutes of their route, with restored work exempt from cloud burst.
+//
+// Decay is the default because it relaxes rather than raises. That holds of
+// decay itself, but not of restoring what was decayed: restored work comes
+// back already late, and without the exemption each restore sent the
+// autoscaler to its ceiling. Across the intent-modes sweep, decay with
+// restored work exempt cut breaches by a quarter and cloud time by a
+// twenty-fifth against no intent, while decay without it cost two-fifths more
+// cloud time (platform-experiments reports/intent-modes).
 func DefaultIntent() IntentSettings {
 	return IntentSettings{
 		Mode:                 IntentDecay,
@@ -164,7 +171,7 @@ func DefaultIntent() IntentSettings {
 		PromoteTo:            PriorityRelocate,
 		DeadlineFrom:         DeadlineFromArrival,
 		Restore:              true,
-		BurstExempt:          []IntentClass{},
+		BurstExempt:          []IntentClass{ClassRestored},
 	}
 }
 

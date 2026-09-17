@@ -495,8 +495,6 @@ func TestRestoredWorkCanBeExempt(t *testing.T) {
 			t.Errorf("decayed job %d is exempt, but only restored work was named", u.JobID)
 		}
 	}
-	// By two minutes the person has left the other two events behind, and
-	// their work decays; the far event's is what comes back.
 	restored := moved(p.Plan(120 * time.Second).Updates)
 	for _, id := range jobsOf(w, farEvent) {
 		if u, ok := restored[id]; !ok || u.Priority != domain.PriorityAssociate || !u.BurstExempt {
@@ -526,16 +524,60 @@ func TestWithoutRestoreDecayIsFinal(t *testing.T) {
 		t.Errorf("far event = %+v: the judgement still changes, and is recorded, even when the work does not", tr)
 	}
 
-	// By now the person has left the other two events behind, so they have
-	// decayed too.
 	p.Configure(settings(`{"mode":"off","restore":false}`))
 	off := moved(p.Plan(135 * time.Second).Updates)
-	if len(off) != len(w.Jobs) {
-		t.Errorf("switching intent off moved %d jobs, want all %d decayed ones restored", len(off), len(w.Jobs))
+	if len(off) != len(w.Events[farEvent].Picks) {
+		t.Errorf("switching intent off moved %d jobs, want the far event's %d decayed ones restored",
+			len(off), len(w.Events[farEvent].Picks))
 	}
 	for id, u := range off {
 		if u.Priority != domain.PriorityAssociate {
 			t.Errorf("job %d = %+v, want restored", id, u)
 		}
+	}
+}
+
+// An event that shook someone matters after they have walked away: where they
+// were when it happened is where to look for them, and the event's location
+// is what an operator needs to do it.
+func TestSomeoneAnEventReachedWhenItHappenedStillProtectsItAfterLeaving(t *testing.T) {
+	leaver := domain.Entity{ID: "person-01", Kind: domain.EntityPerson, Track: []domain.Waypoint{
+		{At: 0, Point: far}, {At: 40 * time.Second, Point: far},
+		{At: 100 * time.Second, Point: person}, {At: 24 * time.Hour, Point: person},
+	}}
+	w := mine(domain.PriorityAssociate, leaver)
+	p := intent.New(w, workload.NewCatalogue(w), settings(`{"knowledge":"truth","lookahead_seconds":0}`))
+
+	if tr, _ := stateOf(p.Plan(30*time.Second), farEvent); tr.State != domain.EventKept {
+		t.Fatalf("far event while the person stands on it = %+v, want kept", tr)
+	}
+	plan := p.Plan(120 * time.Second)
+
+	for _, id := range jobsOf(w, farEvent) {
+		if u, ok := moved(plan.Updates)[id]; ok {
+			t.Errorf("job %d moved to %+v once the person had left, want it kept", id, u)
+		}
+	}
+	if tr, ok := stateOf(plan, farEvent); ok {
+		t.Errorf("far event judged afresh as %+v, want its judgement unchanged", tr)
+	}
+}
+
+// Nor does it protect an event that happened before they got there.
+func TestSomeoneWhoArrivesAndLeavesAgainDoesNotProtectWhatNobodyIsHeadingFor(t *testing.T) {
+	visitor := domain.Entity{ID: "person-01", Kind: domain.EntityPerson, Track: []domain.Waypoint{
+		{At: 0, Point: person}, {At: 50 * time.Second, Point: person},
+		{At: 110 * time.Second, Point: far}, {At: 130 * time.Second, Point: far},
+		{At: 190 * time.Second, Point: person}, {At: 24 * time.Hour, Point: person},
+	}}
+	w := mine(domain.PriorityAssociate, visitor)
+	p := intent.New(w, workload.NewCatalogue(w), settings(`{"knowledge":"truth","lookahead_seconds":0}`))
+	p.Plan(35 * time.Second)
+	p.Plan(120 * time.Second)
+
+	// The visit came after the event: the ground motion was over by then, so
+	// it exposed nobody, and once they have gone nothing protects its work.
+	if tr, _ := stateOf(p.Plan(300*time.Second), farEvent); tr.State != domain.EventDecayed {
+		t.Errorf("far event after the visit = %+v, want decayed again", tr)
 	}
 }
