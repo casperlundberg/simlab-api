@@ -83,6 +83,22 @@ func (e Extent) Clamp(p Point) Point {
 type Layout struct {
 	Extent  Extent   `json:"extent"`
 	Sensors []Sensor `json:"sensors"`
+
+	// Tunnels are the mine's excavations. Optional on a stated layout: without
+	// them nothing can move through the mine, and events are drawn anywhere in
+	// the rock rather than around the workings.
+	Tunnels []Tunnel `json:"tunnels,omitempty"`
+}
+
+// Tunnel is one excavation, as a path through the rock.
+//
+// Low resolution on purpose: a path of straight legs is enough to say where
+// sensors can be installed and where people and vehicles can go. Tunnels join
+// where they share a vertex exactly.
+type Tunnel struct {
+	ID   string  `json:"id"`
+	Kind string  `json:"kind"`
+	Path []Point `json:"path"`
 }
 
 // problems is what makes a layout unusable for a mine declaring sensors of
@@ -126,6 +142,26 @@ func (l Layout) problems(sensors int) []string {
 			problems = append(problems, fmt.Sprintf(
 				"layout sensor %q at (%v, %v, %v) is outside the extent", sensor.ID,
 				sensor.At.X, sensor.At.Y, sensor.At.Z))
+		}
+	}
+	named := make(map[string]bool, len(l.Tunnels))
+	for i, tunnel := range l.Tunnels {
+		if tunnel.ID == "" {
+			problems = append(problems, fmt.Sprintf("layout tunnel %d has no id", i))
+		} else if named[tunnel.ID] {
+			problems = append(problems, fmt.Sprintf("layout names tunnel %q more than once", tunnel.ID))
+		}
+		named[tunnel.ID] = true
+		if len(tunnel.Path) < 2 {
+			problems = append(problems, fmt.Sprintf("layout tunnel %q has %d points; a tunnel needs at least 2",
+				tunnel.ID, len(tunnel.Path)))
+		}
+		for _, p := range tunnel.Path {
+			if !l.Extent.Contains(p) {
+				problems = append(problems, fmt.Sprintf("layout tunnel %q passes through (%v, %v, %v), outside the extent",
+					tunnel.ID, p.X, p.Y, p.Z))
+				break
+			}
 		}
 	}
 	return problems
