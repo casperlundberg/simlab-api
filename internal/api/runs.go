@@ -152,6 +152,13 @@ func (s *server) getRun(w http.ResponseWriter, r *http.Request) {
 	if settings, err := s.Store.RunSettings(r.Context(), id); err == nil && len(settings) > 0 {
 		body["settings"] = json.RawMessage(settings)
 	}
+	if provenance, err := s.Store.RunProvenance(r.Context(), id); err == nil && provenance != nil {
+		body["provenance"] = provenance
+		body["reproducible"] = len(provenance.NotReproducible()) == 0
+		if reasons := provenance.NotReproducible(); len(reasons) > 0 {
+			body["not_reproducible_because"] = reasons
+		}
+	}
 	writeJSON(w, http.StatusOK, body)
 }
 

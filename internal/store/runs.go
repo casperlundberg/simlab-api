@@ -126,10 +126,13 @@ func (s *Store) DeleteRun(ctx context.Context, id string) error {
 	return nil
 }
 
+// The builds are read out of the provenance rather than the whole of it: a
+// list of runs wants to say what built each, not carry every snapshot.
 const runColumns = `
 	SELECT id, name, COALESCE(scenario_id, ''), target_id, mode, status,
 		simulated_start, time_compression, decision_interval_ms,
-		started_at, finished_at, error, created_at
+		started_at, finished_at, error, created_at,
+		provenance->'simlab_api', provenance->'autoscaler'
 	FROM runs`
 
 func (s *Store) scanRun(row scannable) (domain.Run, error) {
@@ -140,11 +143,26 @@ func (s *Store) scanRun(row scannable) (domain.Run, error) {
 		intervalMs     int64
 		startedAt      *time.Time
 		finishedAt     *time.Time
+		simlab         []byte
+		autoscaler     []byte
 	)
 	if err := row.Scan(&run.ID, &run.Name, &run.ScenarioID, &run.TargetID, &run.Mode,
 		&run.Status, &simulatedStart, &compression, &intervalMs,
-		&startedAt, &finishedAt, &run.Error, &run.CreatedAt); err != nil {
+		&startedAt, &finishedAt, &run.Error, &run.CreatedAt, &simlab, &autoscaler); err != nil {
 		return domain.Run{}, err
+	}
+	if simlab != nil {
+		run.BuiltWith = &domain.BuiltWith{}
+		if err := json.Unmarshal(simlab, &run.BuiltWith.SimlabAPI); err != nil {
+			return domain.Run{}, fmt.Errorf("reading what built run %q: %w", run.ID, err)
+		}
+		// JSON null, from a provenance whose autoscaler could not say.
+		if autoscaler != nil && string(autoscaler) != "null" {
+			run.BuiltWith.Autoscaler = &domain.Build{}
+			if err := json.Unmarshal(autoscaler, run.BuiltWith.Autoscaler); err != nil {
+				return domain.Run{}, fmt.Errorf("reading what built run %q: %w", run.ID, err)
+			}
+		}
 	}
 
 	run.DecisionInterval = time.Duration(intervalMs) * time.Millisecond
@@ -351,4 +369,41 @@ func nullableJSON(raw json.RawMessage) any {
 		return nil
 	}
 	return []byte(raw)
+}
+
+// SaveProvenance records what a run was produced by and from.
+func (s *Store) SaveProvenance(ctx context.Context, runID string, provenance domain.Provenance) error {
+	encoded, err := json.Marshal(provenance)
+	if err != nil {
+		return fmt.Errorf("encoding the provenance of run %q: %w", runID, err)
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE runs SET provenance = $2 WHERE id = $1`, runID, encoded)
+	if err != nil {
+		return fmt.Errorf("saving the provenance of run %q: %w", runID, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%w: run %q", ErrNotFound, runID)
+	}
+	return nil
+}
+
+// RunProvenance is what a run was produced by and from, or nil for a run
+// recorded before provenance was.
+func (s *Store) RunProvenance(ctx context.Context, runID string) (*domain.Provenance, error) {
+	var encoded []byte
+	err := s.pool.QueryRow(ctx, `SELECT provenance FROM runs WHERE id = $1`, runID).Scan(&encoded)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("%w: run %q", ErrNotFound, runID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading the provenance of run %q: %w", runID, err)
+	}
+	if encoded == nil {
+		return nil, nil
+	}
+	provenance := &domain.Provenance{}
+	if err := json.Unmarshal(encoded, provenance); err != nil {
+		return nil, fmt.Errorf("reading the provenance of run %q: %w", runID, err)
+	}
+	return provenance, nil
 }

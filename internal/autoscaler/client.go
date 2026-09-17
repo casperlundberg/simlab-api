@@ -168,6 +168,15 @@ type SettingsSnapshot struct {
 	Warnings []string        `json:"warnings,omitempty"`
 }
 
+// Build is which code an autoscaler was built from, as /v1/version reports it.
+type Build struct {
+	Version   string `json:"version"`
+	Commit    string `json:"commit"`
+	Modified  bool   `json:"modified"`
+	GoVersion string `json:"go_version"`
+	Platform  string `json:"platform"`
+}
+
 // PlatformSchema describes what a platform needs, for the UI to render.
 type PlatformSchema struct {
 	Kind         string          `json:"kind"`
@@ -185,6 +194,13 @@ type PlatformField struct {
 	Default     string `json:"default,omitempty"`
 	Example     string `json:"example,omitempty"`
 	Required    bool   `json:"required"`
+}
+
+// Version is which build the autoscaler is.
+func (c *Client) Version(ctx context.Context) (Build, error) {
+	var build Build
+	err := c.do(ctx, http.MethodGet, "/v1/version", nil, nil, &build)
+	return build, err
 }
 
 // Platforms lists what the autoscaler can scale.

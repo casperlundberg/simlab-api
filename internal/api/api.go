@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/casperlundberg/simlab-api/internal/autoscaler"
+	"github.com/casperlundberg/simlab-api/internal/buildinfo"
 	"github.com/casperlundberg/simlab-api/internal/domain"
 	"github.com/casperlundberg/simlab-api/internal/events"
 	"github.com/casperlundberg/simlab-api/internal/runner"
@@ -119,6 +120,8 @@ var routes = []route{
 	{http.MethodGet, "/healthz", true, func(s *server) http.HandlerFunc { return s.health }},
 	{http.MethodGet, "/readyz", true, func(s *server) http.HandlerFunc { return s.ready }},
 
+	{http.MethodGet, "/api/version", false, func(s *server) http.HandlerFunc { return s.version }},
+
 	{http.MethodGet, "/api/mines", false, func(s *server) http.HandlerFunc { return s.listMines }},
 	{http.MethodPost, "/api/mines", false, func(s *server) http.HandlerFunc { return s.saveMine }},
 	{http.MethodGet, "/api/mines/{id}", false, func(s *server) http.HandlerFunc { return s.getMine }},
@@ -203,6 +206,18 @@ func (s *server) ready(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status": "ok", "active_runs": len(s.Manager.Active()),
 	})
+}
+
+// version is which builds this service and its autoscaler are: what a run
+// started now would record in its provenance.
+func (s *server) version(w http.ResponseWriter, r *http.Request) {
+	body := map[string]any{"simlab_api": buildinfo.Read(), "autoscaler": nil}
+	if build, err := s.Autoscaler.Version(r.Context()); err == nil {
+		body["autoscaler"] = build
+	} else {
+		body["autoscaler_error"] = err.Error()
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 func (s *server) listMines(w http.ResponseWriter, r *http.Request) {

@@ -33,13 +33,21 @@ type recorder struct {
 	seismic       map[int]domain.SeismicEvent
 	seismicWrites [][]domain.SeismicEvent
 
-	entities []domain.Entity
+	entities   []domain.Entity
+	provenance *domain.Provenance
 }
 
 func (r *recorder) SaveLayout(_ context.Context, _ string, layout domain.Layout) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.layouts = append(r.layouts, layout)
+	return nil
+}
+
+func (r *recorder) SaveProvenance(_ context.Context, _ string, provenance domain.Provenance) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.provenance = &provenance
 	return nil
 }
 
@@ -622,5 +630,59 @@ func TestEachCycleCountsTheQueueBySubmittedPriorityToo(t *testing.T) {
 	}
 	if !waiting {
 		t.Error("no cycle had anything waiting, so this proves nothing")
+	}
+}
+
+// A run records which code produced it and what it was given, as it begins —
+// both builds, the mine and scenario as they were, and the target's whole
+// settings rather than only the patch, since defaults change between
+// autoscaler versions.
+func TestARunRecordsItsProvenanceAsItBegins(t *testing.T) {
+	h := newHarness(t)
+	spec := simulationSpec()
+
+	if _, err := h.engine.Execute(context.Background(), spec); err != nil {
+		t.Fatalf("Execute() = %v", err)
+	}
+
+	p := h.recorder.provenance
+	if p == nil {
+		t.Fatal("no provenance was recorded")
+	}
+	if p.Autoscaler == nil || p.Autoscaler.Version != h.fake.Build["version"] {
+		t.Errorf("autoscaler build = %+v, want the fake's %v", p.Autoscaler, h.fake.Build)
+	}
+	if p.Autoscaler != nil && p.Autoscaler.Platform != h.fake.Build["platform"] {
+		t.Errorf("autoscaler platform = %q, want the fake's", p.Autoscaler.Platform)
+	}
+	if p.SimlabAPI.GoVersion == "" {
+		t.Error("simlab-api's own build was not recorded")
+	}
+	if p.Scenario == nil || p.Scenario.Seed != spec.Scenario.Seed || p.Mine == nil || p.Mine.Sensors != spec.Mine.Sensors {
+		t.Errorf("snapshots = %+v, %+v", p.Scenario, p.Mine)
+	}
+	var settings map[string]any
+	if err := json.Unmarshal(p.Settings, &settings); err != nil {
+		t.Fatalf("settings: %v", err)
+	}
+	if settings["cloud_executor_cap"] != 40.0 || settings["deadline_seconds_by_priority"] == nil {
+		t.Errorf("settings = %v, want the whole effective settings, patch applied", settings)
+	}
+	if !p.RecordedAt.Equal(start) {
+		t.Errorf("recorded at %v, want the engine's clock %v", p.RecordedAt, start)
+	}
+}
+
+// An autoscaler built before it could report its version is still an
+// autoscaler to run against. The run goes ahead and says it does not know.
+func TestARunAgainstAnAutoscalerThatCannotSayItsVersionStillRuns(t *testing.T) {
+	h := newHarness(t)
+	h.fake.Build = nil
+
+	if _, err := h.engine.Execute(context.Background(), simulationSpec()); err != nil {
+		t.Fatalf("Execute() = %v", err)
+	}
+	if p := h.recorder.provenance; p == nil || p.Autoscaler != nil {
+		t.Errorf("provenance = %+v, want one with no autoscaler build", p)
 	}
 }

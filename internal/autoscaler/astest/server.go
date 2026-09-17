@@ -39,6 +39,10 @@ type Server struct {
 	// testing how a run handles the autoscaler going away mid-run. Zero means
 	// never.
 	FailCyclesAfter int
+
+	// Build is what /v1/version reports. Nil makes the endpoint absent, as it
+	// is on an autoscaler built before it existed.
+	Build map[string]any
 }
 
 // CycleCall is one recorded decision request.
@@ -68,7 +72,10 @@ type target struct {
 
 // New builds a fake with no targets.
 func New(t *testing.T, token string) *Server {
-	return &Server{t: t, Token: token, targets: map[string]*target{}}
+	return &Server{t: t, Token: token, targets: map[string]*target{}, Build: map[string]any{
+		"version": "1.0.0-fake", "commit": "0000000000000000000000000000000000000fake",
+		"modified": false, "go_version": "go-fake", "platform": "fake/fake",
+	}}
 }
 
 // Start runs it and returns the base URL.
@@ -107,6 +114,8 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(path, "/")
 
 	switch {
+	case path == "v1/version" && r.Method == http.MethodGet && s.Build != nil:
+		writeJSON(w, http.StatusOK, s.Build)
 	case path == "v1/platforms" && r.Method == http.MethodGet:
 		s.servePlatforms(w)
 	case path == "v1/targets" && r.Method == http.MethodGet:

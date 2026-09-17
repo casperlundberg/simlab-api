@@ -119,19 +119,20 @@ func (s *Scenario) UnmarshalJSON(data []byte) error {
 }
 
 type runWire struct {
-	ID                      string    `json:"id"`
-	Name                    string    `json:"name,omitempty"`
-	ScenarioID              string    `json:"scenario_id,omitempty"`
-	TargetID                string    `json:"target_id"`
-	Mode                    RunMode   `json:"mode"`
-	Status                  RunStatus `json:"status"`
-	SimulatedStart          time.Time `json:"simulated_start,omitempty"`
-	TimeCompression         float64   `json:"time_compression,omitempty"`
-	DecisionIntervalSeconds float64   `json:"decision_interval_seconds"`
-	StartedAt               time.Time `json:"started_at,omitempty"`
-	FinishedAt              time.Time `json:"finished_at,omitempty"`
-	Error                   string    `json:"error,omitempty"`
-	CreatedAt               time.Time `json:"created_at"`
+	ID                      string     `json:"id"`
+	Name                    string     `json:"name,omitempty"`
+	ScenarioID              string     `json:"scenario_id,omitempty"`
+	TargetID                string     `json:"target_id"`
+	Mode                    RunMode    `json:"mode"`
+	Status                  RunStatus  `json:"status"`
+	SimulatedStart          time.Time  `json:"simulated_start,omitempty"`
+	TimeCompression         float64    `json:"time_compression,omitempty"`
+	DecisionIntervalSeconds float64    `json:"decision_interval_seconds"`
+	StartedAt               time.Time  `json:"started_at,omitempty"`
+	FinishedAt              time.Time  `json:"finished_at,omitempty"`
+	Error                   string     `json:"error,omitempty"`
+	CreatedAt               time.Time  `json:"created_at"`
+	BuiltWith               *BuiltWith `json:"built_with,omitempty"`
 }
 
 // MarshalJSON renders a run with its interval in seconds.
@@ -146,6 +147,7 @@ func (r Run) MarshalJSON() ([]byte, error) {
 		FinishedAt:              r.FinishedAt,
 		Error:                   r.Error,
 		CreatedAt:               r.CreatedAt,
+		BuiltWith:               r.BuiltWith,
 	})
 }
 
@@ -165,6 +167,7 @@ func (r *Run) UnmarshalJSON(data []byte) error {
 		FinishedAt:       wire.FinishedAt,
 		Error:            wire.Error,
 		CreatedAt:        wire.CreatedAt,
+		BuiltWith:        wire.BuiltWith,
 	}
 	return nil
 }

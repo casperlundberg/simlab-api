@@ -219,6 +219,8 @@ func (s Scenario) Validate() error {
 	return nil
 }
 
+func sortStrings(values []string) { sort.Strings(values) }
+
 // SortedPriorities is the scenario's priority levels, most urgent first, so
 // anything generated from the mix is reproducible.
 func (s Scenario) SortedPriorities() []Priority {
@@ -288,6 +290,11 @@ type Run struct {
 	Error      string    `json:"error,omitempty"`
 
 	CreatedAt time.Time `json:"created_at"`
+
+	// BuiltWith is which builds produced the run, read back from its
+	// provenance. Nil for a run recorded before provenance was, or one that
+	// has not started.
+	BuiltWith *BuiltWith `json:"built_with,omitempty"`
 }
 
 // Validate rejects a run that could not be started.

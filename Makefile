@@ -1,6 +1,17 @@
 BINARY := bin/simlab-api
 PKG    := ./...
 
+# What a build is stamped with, so the binary — and every run it records — can
+# say which code it is. See internal/buildinfo, and scripts/version.sh for how a
+# version is derived.
+MODULE   := github.com/casperlundberg/simlab-api
+VERSION  ?= $(shell scripts/version.sh 2>/dev/null)
+COMMIT   ?= $(shell git rev-parse HEAD 2>/dev/null)
+MODIFIED ?= $(shell test -z "$$(git status --porcelain 2>/dev/null)" && echo false || echo true)
+LDFLAGS  := -X $(MODULE)/internal/buildinfo.version=$(VERSION) \
+            -X $(MODULE)/internal/buildinfo.commit=$(COMMIT) \
+            -X $(MODULE)/internal/buildinfo.modified=$(MODIFIED)
+
 .DEFAULT_GOAL := help
 
 .PHONY: help
@@ -64,15 +75,28 @@ fmt-check: ## Fail if any file is not gofmt-clean
 	@out=$$(gofmt -l .); if [ -n "$$out" ]; then echo "not gofmt-clean:"; echo "$$out"; exit 1; fi
 
 .PHONY: build
-build: ## Build the service binary
-	go build -o $(BINARY) ./cmd/simlab-api
+build: ## Build the service binary, stamped with its version and commit
+	go build -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/simlab-api
 
 .PHONY: run
 run: build ## Run the service locally
 	./$(BINARY)
 
+.PHONY: version
+version: ## Print this checkout's semantic version
+	@scripts/version.sh
+
+.PHONY: scripts-test
+scripts-test: ## Test the version and release scripts against real repositories
+	scripts/version_test.sh
+	scripts/release_test.sh
+
+.PHONY: release
+release: ## Tag and push a release: make release VERSION=1.3.0 (needs make db-up)
+	scripts/release.sh $(VERSION)
+
 .PHONY: check
-check: fmt-check vet test-db ## Everything CI runs
+check: fmt-check vet test-db scripts-test ## Everything CI runs
 
 .PHONY: clean
 clean: ## Remove build output

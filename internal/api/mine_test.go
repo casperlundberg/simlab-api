@@ -210,3 +210,33 @@ func TestTheMinesPeopleAndVehiclesCanBeReadBack(t *testing.T) {
 		t.Errorf("a waypoint is %v, want [seconds, x, y, z]", track[0])
 	}
 }
+
+func TestTheServiceSaysWhichBuildsItAndItsAutoscalerAre(t *testing.T) {
+	f := newFixture(t)
+
+	body := decodeBody(t, f.do(t, http.MethodGet, "/api/version", nil))
+	simlab, _ := body["simlab_api"].(map[string]any)
+	if _, ok := simlab["commit"]; !ok {
+		t.Errorf("no simlab_api build: %v", body)
+	}
+	autoscaler, _ := body["autoscaler"].(map[string]any)
+	if autoscaler["version"] != f.fake.Build["version"] {
+		t.Errorf("autoscaler build = %v, want the fake's", body["autoscaler"])
+	}
+}
+
+func TestARunServesItsProvenance(t *testing.T) {
+	f := newFixture(t)
+	runID := completedRun(t, f)
+
+	body := decodeBody(t, f.do(t, http.MethodGet, "/api/runs/"+runID, nil))
+	provenance, _ := body["provenance"].(map[string]any)
+	scenario, _ := provenance["scenario"].(map[string]any)
+	if scenario["seed"] != 7.0 {
+		t.Errorf("provenance scenario = %v, want the seeded scenario the run replayed", provenance["scenario"])
+	}
+	run, _ := body["run"].(map[string]any)
+	if _, ok := run["built_with"].(map[string]any); !ok {
+		t.Errorf("run = %v, want built_with", run)
+	}
+}

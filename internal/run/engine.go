@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/casperlundberg/simlab-api/internal/autoscaler"
+	"github.com/casperlundberg/simlab-api/internal/buildinfo"
 	"github.com/casperlundberg/simlab-api/internal/domain"
 	"github.com/casperlundberg/simlab-api/internal/queue"
 	"github.com/casperlundberg/simlab-api/internal/workload"
@@ -59,6 +60,10 @@ type Recorder interface {
 	// SaveEntities records the people and vehicles underground, and where
 	// they go.
 	SaveEntities(ctx context.Context, runID string, entities []domain.Entity) error
+
+	// SaveProvenance records which code produced the run and what it was
+	// given, so it can be rebuilt and replayed.
+	SaveProvenance(ctx context.Context, runID string, provenance domain.Provenance) error
 }
 
 // Publisher is how a run in flight reaches whoever is watching it.
@@ -92,6 +97,9 @@ type Engine struct {
 	// sleep is how the engine paces a run. Injectable so tests do not wait.
 	sleep func(time.Duration)
 	now   func() time.Time
+
+	// build is this process's own, recorded with every run.
+	build domain.Build
 }
 
 // New builds an engine.
@@ -102,6 +110,7 @@ func New(client *autoscaler.Client, recorder Recorder, publisher Publisher) *Eng
 		publisher:  publisher,
 		sleep:      func(d time.Duration) { time.Sleep(d) },
 		now:        func() time.Time { return time.Now().UTC() },
+		build:      buildinfo.Read(),
 	}
 }
 
@@ -176,8 +185,17 @@ func (e *Engine) simulate(ctx context.Context, spec Spec) (domain.Metrics, error
 		_ = e.autoscaler.DeleteTarget(context.WithoutCancel(ctx), spec.Run.TargetID)
 	}()
 
-	deadlines, err := e.deadlinesOf(ctx, spec.Run.TargetID)
+	settings, err := e.autoscaler.GetSettings(ctx, spec.Run.TargetID)
 	if err != nil {
+		return domain.Metrics{}, err
+	}
+	deadlines, err := deadlinesOf(settings)
+	if err != nil {
+		return domain.Metrics{}, err
+	}
+
+	mine, scenario := spec.Mine, spec.Scenario
+	if err := e.recorder.SaveProvenance(ctx, spec.Run.ID, e.provenance(ctx, settings, &mine, &scenario)); err != nil {
 		return domain.Metrics{}, err
 	}
 
@@ -283,6 +301,17 @@ func (e *Engine) simulate(ctx context.Context, spec Spec) (domain.Metrics, error
 // two schedulers fighting over one fleet.
 func (e *Engine) observe(ctx context.Context, spec Spec) (domain.Metrics, error) {
 	metrics := domain.Metrics{RunID: spec.Run.ID}
+
+	// A live run replays nothing, but which code decided and under what
+	// settings is as much a part of its record as a simulation's.
+	settings, err := e.autoscaler.GetSettings(ctx, spec.Run.TargetID)
+	if err != nil {
+		return metrics, err
+	}
+	if err := e.recorder.SaveProvenance(ctx, spec.Run.ID, e.provenance(ctx, settings, nil, nil)); err != nil {
+		return metrics, err
+	}
+
 	interval := spec.Run.DecisionInterval
 
 	var lastSeen time.Time
@@ -354,6 +383,30 @@ func (e *Engine) createTarget(ctx context.Context, spec Spec) error {
 	return nil
 }
 
+// provenance is what this run is produced by and from, as it begins.
+//
+// An autoscaler that cannot report its build is recorded as unknown rather
+// than failing the run: it can still decide, and the provenance says plainly
+// that this run cannot be traced to its code.
+func (e *Engine) provenance(ctx context.Context, settings autoscaler.SettingsSnapshot,
+	mine *domain.Mine, scenario *domain.Scenario) domain.Provenance {
+	p := domain.Provenance{
+		RecordedAt:      e.now(),
+		SimlabAPI:       e.build,
+		Mine:            mine,
+		Scenario:        scenario,
+		Settings:        settings.Settings,
+		SettingsVersion: settings.Version,
+	}
+	if build, err := e.autoscaler.Version(ctx); err == nil {
+		p.Autoscaler = &domain.Build{
+			Version: build.Version, Commit: build.Commit, Modified: build.Modified,
+			GoVersion: build.GoVersion, Platform: build.Platform,
+		}
+	}
+	return p
+}
+
 // deadlinesOf reads the SLA the target is actually configured with.
 //
 // Reading them rather than taking them from the run is what keeps a run
@@ -361,12 +414,7 @@ func (e *Engine) createTarget(ctx context.Context, spec Spec) error {
 // the autoscaler was deciding against, so predicted and actual are comparable.
 // A run that used its own numbers would be marking a different exam from the
 // one the controller sat.
-func (e *Engine) deadlinesOf(ctx context.Context, targetID string) (queue.Deadlines, error) {
-	snapshot, err := e.autoscaler.GetSettings(ctx, targetID)
-	if err != nil {
-		return queue.Deadlines{}, err
-	}
-
+func deadlinesOf(snapshot autoscaler.SettingsSnapshot) (queue.Deadlines, error) {
 	var settings struct {
 		Deadlines map[string]float64 `json:"deadline_seconds_by_priority"`
 		Default   float64            `json:"default_deadline_seconds"`
