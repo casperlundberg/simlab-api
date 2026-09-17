@@ -3,6 +3,16 @@
 Every release, newest first. `make release` will not tag a version without a
 section here, so the tag message and this file always agree.
 
+## 2.0.1 — 2026-09-17
+
+- Intent skips judging an event whose judgement cannot have changed: nothing
+  protected moves faster than the quickest vehicle, so until the time since a
+  judgement covers the distance it had to spare, no boundary can have been
+  crossed. It also stops asking for work already where it asked for it. A whole
+  simulated day of a busy mine now plans in seconds rather than minutes, and
+  `TestSkippingSettledEventsDecidesExactlyWhatJudgingEverythingDoes` holds it to
+  deciding exactly what judging everything every cycle decides.
+
 ## 2.0.0 — 2026-09-17
 
 MAJOR, for two reasons a recorded result for an unchanged scenario can change:

@@ -59,6 +59,15 @@ type Planner struct {
 	next   int
 	open   []int
 	judged []judgement
+
+	// generation counts settings changes, and speed is the fastest anything
+	// protected moves; together they are what makes skipping a judgement safe.
+	generation int
+	speed      float64
+
+	// alwaysJudge turns the skipping off, for the test that holds it to
+	// deciding exactly what judging everything every cycle decides.
+	alwaysJudge bool
 }
 
 type eventWork struct {
@@ -102,6 +111,23 @@ func (r request) displaces(submitted domain.Priority) bool {
 
 type judgement struct {
 	state, basis string
+
+	// at is when it was made, and slack how far the nearest protected path
+	// was from the boundary that decided it, in metres. Nothing protected can
+	// have crossed that boundary until it has had time to cover the slack, so
+	// until then the judgement stands without measuring anything.
+	at    time.Duration
+	slack float64
+
+	// from is the position the event was judged at, so a new location — or a
+	// first one — is judged afresh however much slack the last one had.
+	from domain.Point
+
+	// asked is the state the event's jobs were last asked to follow, and
+	// under which generation of the settings. Both unchanged means what is
+	// wanted for every one of its jobs is unchanged.
+	asked      string
+	generation int
 }
 
 // Transition is a change of intent about one event, by its index.
@@ -124,14 +150,16 @@ func New(w workload.Workload, catalogue *workload.Catalogue, settings domain.Int
 	}
 
 	p := &Planner{
-		jobs:      w.Jobs,
-		entities:  w.Entities,
-		catalogue: catalogue,
-		settings:  settings,
-		events:    make([]eventWork, len(w.Events)),
-		truths:    make([]Sighting, len(w.Events)),
-		requested: make([]request, len(w.Jobs)),
-		judged:    make([]judgement, len(w.Events)),
+		jobs:       w.Jobs,
+		entities:   w.Entities,
+		catalogue:  catalogue,
+		settings:   settings,
+		generation: 1,
+		speed:      fastest(w.Entities),
+		events:     make([]eventWork, len(w.Events)),
+		truths:     make([]Sighting, len(w.Events)),
+		requested:  make([]request, len(w.Jobs)),
+		judged:     make([]judgement, len(w.Events)),
 	}
 	for i, event := range w.Events {
 		triggers := make([]domain.Point, 0, len(event.Picks))
@@ -152,10 +180,13 @@ func New(w workload.Workload, catalogue *workload.Catalogue, settings domain.Int
 // Configure changes the settings the next plan is made under.
 func (p *Planner) Configure(settings domain.IntentSettings) {
 	// Who counts as protected may have changed, and with it who was nearest
-	// each event when it happened.
+	// each event when it happened. Every judgement and every request is made
+	// again under the new settings.
 	for i := range p.events {
 		p.events[i].struck = struck{}
+		p.judged[i].slack = 0
 	}
+	p.generation++
 	p.settings = settings
 }
 
@@ -182,6 +213,9 @@ func (p *Planner) Plan(at time.Duration) Plan {
 			continue
 		}
 		open = append(open, i)
+		if !off && p.settled(i, at) {
+			continue
+		}
 		if off && p.altered == 0 {
 			// Nothing to undo and nothing to do; but a judgement still on
 			// record has to say intent let go of it.
@@ -200,6 +234,56 @@ func (p *Planner) Plan(at time.Duration) Plan {
 	return plan
 }
 
+// settled reports whether event i's judgement cannot have changed since it was
+// made, and neither can what its jobs were asked for.
+//
+// Two things could change it: the mine's sighting of the event, which is
+// checked against the position it was judged from; and something protected
+// moving across the boundary that decided it. Nothing protected moves faster
+// than the quickest vehicle, so until the time since the judgement is enough
+// to cover the slack at that speed, nothing can have crossed. Every judgement
+// this skips is one that would have come out the same.
+func (p *Planner) settled(i int, at time.Duration) bool {
+	last := p.judged[i]
+	if p.alwaysJudge || last.slack <= 0 || last.asked == "" || last.generation != p.generation {
+		return false
+	}
+	if p.speed <= 0 {
+		// Nothing moves: only a new sighting can change anything.
+		return p.sightingAt(i) == last.from
+	}
+	if (at-last.at).Seconds()*p.speed >= last.slack {
+		return false
+	}
+	return p.sightingAt(i) == last.from
+}
+
+// sightingAt is where intent currently takes event i to be, or the zero point
+// when it has nothing to go on.
+func (p *Planner) sightingAt(i int) domain.Point {
+	sighting, ok := p.sight(i)
+	if !ok {
+		return domain.Point{}
+	}
+	return sighting.At
+}
+
+// fastest is how quickly the quickest protected entity moves, in metres per
+// second, over its whole track. Measured from the tracks rather than assumed,
+// so a scenario with faster vehicles cannot quietly break the skip above.
+func fastest(entities []domain.Entity) float64 {
+	speed := 0.0
+	for _, entity := range entities {
+		for k := 1; k < len(entity.Track); k++ {
+			a, b := entity.Track[k-1], entity.Track[k]
+			if seconds := (b.At - a.At).Seconds(); seconds > 0 {
+				speed = math.Max(speed, a.Point.DistanceTo(b.Point)/seconds)
+			}
+		}
+	}
+	return speed
+}
+
 // assess judges one event against the protected paths.
 func (p *Planner) assess(i int, at time.Duration, paths []Path) domain.IntentTransition {
 	sighting, ok := p.sight(i)
@@ -207,6 +291,8 @@ func (p *Planner) assess(i int, at time.Duration, paths []Path) domain.IntentTra
 		return domain.IntentTransition{At: at, State: domain.EventUnknown}
 	}
 	out := domain.IntentTransition{At: at, Basis: sighting.Basis}
+	judged := &p.judged[i]
+	judged.at, judged.from, judged.slack = at, sighting.At, math.Inf(1)
 	entity, distance, found := Nearest(paths, sighting.At)
 	// Where people were when the event happened counts as much as where they
 	// are going: an event that shook someone is worth locating after they
@@ -219,12 +305,22 @@ func (p *Planner) assess(i int, at time.Duration, paths []Path) domain.IntentTra
 	}
 
 	s := p.settings
-	if promote, reaches := p.reach(sighting, s.PromoteLevel); s.Mode.Promotes() && found && reaches && distance <= promote {
-		out.State, out.Reach = domain.EventPromoted, promote
-		return out
+	// The slack is the distance to whichever boundary the judgement turned
+	// on; with nothing protected anywhere, no boundary can be crossed.
+	if promote, reaches := p.reach(sighting, s.PromoteLevel); s.Mode.Promotes() && reaches {
+		if found {
+			judged.slack = math.Min(judged.slack, math.Abs(distance-promote))
+		}
+		if found && distance <= promote {
+			out.State, out.Reach = domain.EventPromoted, promote
+			return out
+		}
 	}
 	protect, reaches := p.reach(sighting, s.ProtectLevel)
 	out.Reach = protect
+	if found && reaches {
+		judged.slack = math.Min(judged.slack, math.Abs(distance-protect))
+	}
 	if s.Mode.Decays() && (!found || !reaches || distance > protect) {
 		out.State = domain.EventDecayed
 		return out
@@ -302,14 +398,13 @@ func (p *Planner) reach(sighting Sighting, level string) (float64, bool) {
 // says nothing — unknown, or intent off — is not a change worth recording.
 func (p *Planner) judge(plan *Plan, i int, at time.Duration, transition domain.IntentTransition) {
 	last := p.judged[i]
-	now := judgement{state: transition.State, basis: transition.Basis}
-	if now == last {
+	p.judged[i].state, p.judged[i].basis = transition.State, transition.Basis
+	if transition.State == last.state && transition.Basis == last.basis {
 		return
 	}
-	if last == (judgement{}) && (now.state == domain.EventUnknown || now.basis == basisOff) {
+	if last.state == "" && (transition.State == domain.EventUnknown || transition.Basis == basisOff) {
 		return
 	}
-	p.judged[i] = now
 	plan.Transitions = append(plan.Transitions, Transition{Event: i, IntentTransition: transition})
 }
 
@@ -317,6 +412,12 @@ func (p *Planner) judge(plan *Plan, i int, at time.Duration, transition domain.I
 func (p *Planner) request(plan *Plan, i int, at time.Duration, state string) {
 	s := p.settings
 	event := p.events[i]
+	// What each of an event's jobs should be at follows from its state and the
+	// settings alone, so asking again for the same pair can move nothing.
+	if p.judged[i].asked == state && p.judged[i].generation == p.generation {
+		return
+	}
+	p.judged[i].asked, p.judged[i].generation = state, p.generation
 	for k := 0; k < event.picks; k++ {
 		id := event.first + domain.JobID(k)
 		if p.catalogue.Finished(id) {
