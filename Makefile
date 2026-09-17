@@ -46,7 +46,9 @@ db-up: ## Start a scratch Postgres for the database tests
 	docker run -d --rm --name $(TEST_DB_CONTAINER) \
 		-e POSTGRES_PASSWORD=simlab -e POSTGRES_USER=simlab -e POSTGRES_DB=simlab_test \
 		-p 15432:5432 postgres:16-alpine
-	@until docker exec $(TEST_DB_CONTAINER) pg_isready -U simlab >/dev/null 2>&1; do sleep 0.3; done
+	@# Over TCP, not the socket: the image starts a socket-only server to run its
+	@# init scripts, and that one answers pg_isready before the real one is up.
+	@until docker exec $(TEST_DB_CONTAINER) pg_isready -h 127.0.0.1 -U simlab >/dev/null 2>&1; do sleep 0.3; done
 	@echo "postgres ready on 127.0.0.1:15432"
 
 .PHONY: db-down
