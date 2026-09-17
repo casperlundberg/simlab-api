@@ -63,6 +63,11 @@ type SeismicEvent struct {
 	// what says which sensors have work outstanding at a moment, which the
 	// event-level times cannot: an event's picks finish one by one.
 	PickProcessedAt []*time.Duration
+
+	// Intent is every change of mind the mine's intent had about this event's
+	// work, in order: whether it was kept, decayed or promoted, and why. Nil
+	// for an event recorded before intent was.
+	Intent []IntentTransition
 }
 
 // Location is an estimate the mine solved, and how much it should be trusted.
@@ -106,19 +111,20 @@ type Exposure struct {
 }
 
 type seismicEventWire struct {
-	RunID              string     `json:"run_id"`
-	Sequence           int        `json:"sequence"`
-	OriginSeconds      float64    `json:"origin_seconds"`
-	Burst              *int       `json:"burst"`
-	Truth              Point      `json:"truth"`
-	Magnitude          *float64   `json:"magnitude"`
-	Exposed            []Exposure `json:"exposed"`
-	Sensors            []string   `json:"sensors"`
-	LocatedAtSeconds   *float64   `json:"located_at_seconds"`
-	Located            *Location  `json:"located"`
-	ProcessedAtSeconds *float64   `json:"processed_at_seconds"`
-	Final              *Location  `json:"final"`
-	PicksProcessedAt   []*float64 `json:"picks_processed_at_seconds"`
+	RunID              string             `json:"run_id"`
+	Sequence           int                `json:"sequence"`
+	OriginSeconds      float64            `json:"origin_seconds"`
+	Burst              *int               `json:"burst"`
+	Truth              Point              `json:"truth"`
+	Magnitude          *float64           `json:"magnitude"`
+	Exposed            []Exposure         `json:"exposed"`
+	Sensors            []string           `json:"sensors"`
+	LocatedAtSeconds   *float64           `json:"located_at_seconds"`
+	Located            *Location          `json:"located"`
+	ProcessedAtSeconds *float64           `json:"processed_at_seconds"`
+	Final              *Location          `json:"final"`
+	PicksProcessedAt   []*float64         `json:"picks_processed_at_seconds"`
+	Intent             []IntentTransition `json:"intent"`
 }
 
 // MarshalJSON renders an event with its times in seconds, and with the times
@@ -152,6 +158,7 @@ func (e SeismicEvent) MarshalJSON() ([]byte, error) {
 		ProcessedAtSeconds: secondsOf(e.ProcessedAt),
 		Final:              e.Final,
 		PicksProcessedAt:   picks,
+		Intent:             e.Intent,
 	})
 }
 
@@ -173,6 +180,7 @@ func (e *SeismicEvent) UnmarshalJSON(data []byte) error {
 		Located:     wire.Located,
 		ProcessedAt: durationOf(wire.ProcessedAtSeconds),
 		Final:       wire.Final,
+		Intent:      wire.Intent,
 	}
 	if wire.PicksProcessedAt != nil {
 		e.PickProcessedAt = make([]*time.Duration, len(wire.PicksProcessedAt))

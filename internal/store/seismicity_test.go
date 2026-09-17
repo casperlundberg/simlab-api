@@ -162,6 +162,10 @@ func locatedEvent() domain.SeismicEvent {
 			Magnitude: &final, Zones: map[string]float64{"moderate": 950},
 			Exposed: []domain.Exposure{},
 		},
+		Intent: []domain.IntentTransition{
+			{At: 95 * time.Second, State: domain.EventDecayed, Basis: "location", Entity: "person-02", Distance: 412.5, Reach: 300},
+			{At: 110 * time.Second, State: domain.EventKept, Basis: "location", Entity: "person-02", Distance: 180, Reach: 300},
+		},
 	}
 }
 

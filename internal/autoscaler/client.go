@@ -81,8 +81,14 @@ type QueueInfo struct {
 
 // Workload is the queue handed to the autoscaler for a driven decision.
 type Workload struct {
-	Queues             map[string]QueueInfo `json:"queues"`
-	ExecutorThroughput float64              `json:"executor_throughput_per_second"`
+	Queues map[string]QueueInfo `json:"queues"`
+
+	// BurstExempt is waiting work that may use capacity but may not be the
+	// reason cloud capacity is bought. Omitted when empty, so an autoscaler
+	// that predates exemption is sent exactly what it always was.
+	BurstExempt map[string]QueueInfo `json:"burst_exempt,omitempty"`
+
+	ExecutorThroughput float64 `json:"executor_throughput_per_second"`
 }
 
 // Capacity is what the platform reports as running.
@@ -106,6 +112,7 @@ type Projection struct {
 	FirstBreachSeconds  float64 `json:"first_breach_in_seconds,omitempty"`
 	PeakQueueDepth      int     `json:"peak_queue_depth"`
 	DrainedAtSeconds    float64 `json:"drained_at_seconds,omitempty"`
+	BreachesExemptOnly  bool    `json:"breaches_exempt_only,omitempty"`
 }
 
 // Decision is one cycle's answer.

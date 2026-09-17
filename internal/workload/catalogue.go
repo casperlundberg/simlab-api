@@ -56,6 +56,7 @@ func NewCatalogue(w Workload) *Catalogue {
 			Exposed:         exposure(w.Entities, event.Truth, magnitude, event.Origin, 0),
 			Sensors:         sensors,
 			PickProcessedAt: make([]*time.Duration, len(event.Picks)),
+			Intent:          []domain.IntentTransition{},
 		}
 	}
 	return &Catalogue{
@@ -79,7 +80,26 @@ func (c *Catalogue) Events() []domain.SeismicEvent {
 // catalogue's later updates to the pick times it shares.
 func snapshot(event domain.SeismicEvent) domain.SeismicEvent {
 	event.PickProcessedAt = append([]*time.Duration(nil), event.PickProcessedAt...)
+	event.Intent = append([]domain.IntentTransition{}, event.Intent...)
 	return event
+}
+
+// Location is the mine's first location for event i, or nil before it has
+// one. This, and never the event's Truth, is what anything ordering work by
+// location may read.
+func (c *Catalogue) Location(i int) *domain.Location { return c.events[i].Located }
+
+// Finished reports whether a job has been reported finished.
+func (c *Catalogue) Finished(id domain.JobID) bool { return c.done[id] }
+
+// Remaining is how many of event i's picks are still to be processed.
+func (c *Catalogue) Remaining(i int) int { return len(c.workload.Events[i].Picks) - c.processed[i] }
+
+// RecordIntent adds a change of intent to event i's record, and returns the
+// record as it now stands.
+func (c *Catalogue) RecordIntent(i int, transition domain.IntentTransition) domain.SeismicEvent {
+	c.events[i].Intent = append(c.events[i].Intent, transition)
+	return snapshot(c.events[i])
 }
 
 // Observe records that jobs finished by at, and returns every event one of

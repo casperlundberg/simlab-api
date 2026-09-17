@@ -25,8 +25,11 @@ func (f *fake) Advance(time.Duration, int) orchestrator.Progress {
 	return orchestrator.Progress{}
 }
 func (f *fake) Snapshot(time.Duration) map[domain.Priority]domain.QueueSnapshot { return nil }
-func (f *fake) Done() bool                                                      { return true }
-func (f *fake) Stats() orchestrator.Stats                                       { return orchestrator.Stats{} }
+func (f *fake) SnapshotByBurst(time.Duration) (counted, exempt map[domain.Priority]domain.QueueSnapshot) {
+	return nil, nil
+}
+func (f *fake) Done() bool                { return true }
+func (f *fake) Stats() orchestrator.Stats { return orchestrator.Stats{} }
 
 func (f *fake) Reprioritise(_ time.Duration, updates []orchestrator.PriorityUpdate) orchestrator.Applied {
 	f.applied = append(f.applied, updates...)

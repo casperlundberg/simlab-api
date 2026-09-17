@@ -375,6 +375,14 @@ type Cycle struct {
 	// Comparing it with what actually happened is the point of a run.
 	BreachExpected bool `json:"breach_expected"`
 
+	// BreachesExemptOnly is the autoscaler saying every breach it predicted
+	// was of work exempt from cloud burst: accepted, not missed.
+	BreachesExemptOnly bool `json:"breaches_exempt_only"`
+
+	// Intent is what the mine's intent had done to the queue this cycle. Nil
+	// for a cycle recorded before intent was, or a live run.
+	Intent *CycleIntent `json:"intent"`
+
 	// Completed and Breached are what this cycle actually produced.
 	Completed int `json:"completed"`
 	Breached  int `json:"breached"`
@@ -400,6 +408,14 @@ type Metrics struct {
 
 	// SLABreaches is jobs that waited longer than their level's deadline.
 	SLABreaches int `json:"sla_breaches"`
+
+	// SLABreachesAsSubmitted is jobs that waited longer than the deadline of
+	// the level they were submitted at, from submission — the SLA as it would
+	// have been judged had intent not moved anything.
+	SLABreachesAsSubmitted int `json:"sla_breaches_as_submitted"`
+
+	// JobsReprioritised is how many jobs intent actually moved at least once.
+	JobsReprioritised int `json:"jobs_reprioritised"`
 
 	// BreachRate is breaches as a share of completed jobs.
 	BreachRate float64 `json:"breach_rate"`

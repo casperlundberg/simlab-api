@@ -71,3 +71,35 @@ func TestNoJobIsEverLostHoweverTheFleetChanges(t *testing.T) {
 		}
 	}
 }
+
+// Without intent nothing changes a job's priority or its deadline origin, so
+// the SLA each job was submitted under and the one it is judged by are the
+// same SLA, and the two counts must agree exactly.
+func TestWithoutReprioritisationBothBreachCountsAgree(t *testing.T) {
+	r := rand.New(rand.NewPCG(7, 13))
+
+	for trial := 0; trial < 300; trial++ {
+		var jobs []workload.Job
+		for i, n := 0, 1+r.IntN(150); i < n; i++ {
+			jobs = append(jobs, workload.Job{
+				ID:          domain.JobID(i),
+				SubmittedAt: time.Duration(r.IntN(600)) * time.Second,
+				Priority:    []domain.Priority{100, 50, 25}[r.IntN(3)],
+				Seconds:     1 + r.Float64()*40,
+			})
+		}
+		q := queue.New(jobs, queue.Deadlines{
+			Levels:  map[domain.Priority]time.Duration{100: 30 * time.Second, 50: 2 * time.Minute},
+			Default: 10 * time.Minute,
+		})
+
+		at := time.Duration(0)
+		for cycle := 0; cycle < 3000 && !q.Done(); cycle++ {
+			at += 15 * time.Second
+			q.Advance(at, r.IntN(4))
+		}
+		if stats := q.Stats(); stats.Breached != stats.BreachedAsSubmitted {
+			t.Fatalf("trial %d: %d breaches, %d as submitted", trial, stats.Breached, stats.BreachedAsSubmitted)
+		}
+	}
+}

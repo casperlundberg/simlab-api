@@ -51,6 +51,9 @@ type CycleCall struct {
 	At         time.Time
 	TotalDepth int
 	Executors  int
+
+	// ExemptDepth is the part of TotalDepth sent as exempt from cloud burst.
+	ExemptDepth int
 }
 
 type target struct {
@@ -271,6 +274,9 @@ func (s *Server) serveCycle(w http.ResponseWriter, r *http.Request, id string) {
 				OldestJobAgeSeconds float64 `json:"oldest_job_age_seconds"`
 				ArrivalRate         float64 `json:"arrival_rate_per_second"`
 			} `json:"queues"`
+			BurstExempt map[string]struct {
+				Depth int `json:"depth"`
+			} `json:"burst_exempt"`
 			ExecutorThroughput float64 `json:"executor_throughput_per_second"`
 		} `json:"workload"`
 	}
@@ -303,10 +309,15 @@ func (s *Server) serveCycle(w http.ResponseWriter, r *http.Request, id string) {
 		now = time.Now().UTC()
 	}
 
-	depth := 0
+	depth, exempt := 0, 0
 	for _, level := range body.Workload.Queues {
 		depth += level.Depth
 	}
+	for _, level := range body.Workload.BurstExempt {
+		exempt += level.Depth
+	}
+	counted := depth
+	depth += exempt
 
 	localReady, localPending := split(t.local, now)
 	cloudReady, cloudPending := split(t.cloud, now)
@@ -321,22 +332,28 @@ func (s *Server) serveCycle(w http.ResponseWriter, r *http.Request, id string) {
 	if throughput <= 0 {
 		throughput = 1.0 / 20
 	}
-	needed := int(math.Ceil(float64(depth) * throughput / math.Max(throughput*60, 1e-9)))
-	if depth > 0 && needed < 1 {
-		needed = 1
+	need := func(jobs int) int {
+		n := int(math.Ceil(float64(jobs) * throughput / math.Max(throughput*60, 1e-9)))
+		if jobs > 0 && n < 1 {
+			n = 1
+		}
+		return n
 	}
+	needed := need(depth)
 
 	localCap := intSetting(t.settings, "local_executor_cap", 10)
 	cloudCap := intSetting(t.settings, "cloud_executor_cap", 20)
 
+	// Exempt work may use local capacity but buys no cloud, as the real
+	// engine's does.
 	planLocal := min(needed, localCap)
-	planCloud := min(max(needed-planLocal, 0), cloudCap)
+	planCloud := min(max(need(counted)-planLocal, 0), cloudCap)
 
 	t.local = resize(t.local, planLocal, now, coldstart(t.config, "local_coldstart_seconds"))
 	t.cloud = resize(t.cloud, planCloud, now, coldstart(t.config, "cloud_coldstart_seconds"))
 
 	s.Cycles = append(s.Cycles, CycleCall{
-		TargetID: id, At: now, TotalDepth: depth, Executors: localReady + cloudReady,
+		TargetID: id, At: now, TotalDepth: depth, Executors: localReady + cloudReady, ExemptDepth: exempt,
 	})
 
 	action := "maintain"

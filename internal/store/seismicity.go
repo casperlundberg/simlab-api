@@ -90,21 +90,30 @@ func (s *Store) SaveSeismicEvents(ctx context.Context, runID string, events []do
 				}
 				exposed = encoded
 			}
+			var intent any
+			if event.Intent != nil {
+				encoded, err := json.Marshal(event.Intent)
+				if err != nil {
+					return fmt.Errorf("encoding the intent about event %d of run %q: %w", event.Sequence, runID, err)
+				}
+				intent = encoded
+			}
 			batch.Queue(`
 				INSERT INTO run_seismic_events (run_id, sequence, origin_ms, burst, truth, sensors,
 					located_at_ms, located, processed_at_ms, final, picks_processed_at_ms,
-					magnitude, exposed)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+					magnitude, exposed, intent)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 				ON CONFLICT (run_id, sequence) DO UPDATE SET
 					origin_ms = EXCLUDED.origin_ms, burst = EXCLUDED.burst,
 					truth = EXCLUDED.truth, sensors = EXCLUDED.sensors,
 					located_at_ms = EXCLUDED.located_at_ms, located = EXCLUDED.located,
 					processed_at_ms = EXCLUDED.processed_at_ms, final = EXCLUDED.final,
 					picks_processed_at_ms = EXCLUDED.picks_processed_at_ms,
-					magnitude = EXCLUDED.magnitude, exposed = EXCLUDED.exposed`,
+					magnitude = EXCLUDED.magnitude, exposed = EXCLUDED.exposed,
+					intent = EXCLUDED.intent`,
 				runID, event.Sequence, event.Origin.Milliseconds(), event.Burst, truth, sensors,
 				nullableMs(event.LocatedAt), located, nullableMs(event.ProcessedAt), final,
-				pickTimes(event.PickProcessedAt), event.Magnitude, exposed)
+				pickTimes(event.PickProcessedAt), event.Magnitude, exposed, intent)
 		}
 
 		if err := s.pool.SendBatch(ctx, batch).Close(); err != nil {
@@ -123,7 +132,7 @@ func (s *Store) SeismicEvents(ctx context.Context, runID string, from, limit int
 	rows, err := s.pool.Query(ctx, `
 		SELECT run_id, sequence, origin_ms, burst, truth, sensors,
 			located_at_ms, located, processed_at_ms, final, picks_processed_at_ms,
-			magnitude, exposed
+			magnitude, exposed, intent
 		FROM run_seismic_events
 		WHERE run_id = $1 AND sequence > $2
 		ORDER BY sequence
@@ -143,10 +152,11 @@ func (s *Store) SeismicEvents(ctx context.Context, runID string, from, limit int
 			located, final      []byte
 			picks               []*int64
 			exposed             []byte
+			intent              []byte
 		)
 		if err := rows.Scan(&event.RunID, &event.Sequence, &originMs, &event.Burst, &truth,
 			&event.Sensors, &locatedAt, &located, &finished, &final, &picks,
-			&event.Magnitude, &exposed); err != nil {
+			&event.Magnitude, &exposed, &intent); err != nil {
 			return nil, fmt.Errorf("reading a seismic event of run %q: %w", runID, err)
 		}
 
@@ -165,6 +175,11 @@ func (s *Store) SeismicEvents(ctx context.Context, runID string, from, limit int
 		if exposed != nil {
 			if err := json.Unmarshal(exposed, &event.Exposed); err != nil {
 				return nil, fmt.Errorf("reading who event %d exposed: %w", event.Sequence, err)
+			}
+		}
+		if intent != nil {
+			if err := json.Unmarshal(intent, &event.Intent); err != nil {
+				return nil, fmt.Errorf("reading the intent about event %d: %w", event.Sequence, err)
 			}
 		}
 		if event.Located, err = locationFrom(located); err != nil {

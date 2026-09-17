@@ -56,6 +56,11 @@ type queued struct {
 	started    time.Duration
 	hasStarted bool
 
+	// moving marks a job being taken out of its level by a reprioritisation,
+	// and reprioritised one whose priority has ever been changed.
+	moving        bool
+	reprioritised bool
+
 	// breached records that this job has already been counted, so a job that
 	// waits ten times its deadline is still one missed SLA.
 	breached bool
@@ -63,6 +68,33 @@ type queued struct {
 	// submitted is the priority the job arrived with. job.Priority is where
 	// it sits now, which a reprioritisation moves; this never changes.
 	submitted domain.Priority
+
+	// deadlineFrom is what the job's deadline is measured from: its
+	// submission, unless a reprioritisation restarted the clock. A level is
+	// kept in this order, so its head is always the job closest to breaching.
+	deadlineFrom time.Duration
+
+	// exempt is whether the job may not be the reason cloud capacity is
+	// bought. It changes only by reprioritisation.
+	exempt bool
+
+	// waiting is whether the job is in a level, as opposed to not yet
+	// arrived, running, or done.
+	waiting bool
+
+	// breachedAsSubmitted records that the job waited past the deadline of
+	// the level it was submitted at, measured from submission — the SLA it
+	// was submitted under, whatever happened to it since.
+	breachedAsSubmitted bool
+}
+
+// before is the order within a level: by deadline origin, then by identity,
+// which for jobs of one submission time is the order they were submitted in.
+func before(a, b *queued) bool {
+	if a.deadlineFrom != b.deadlineFrom {
+		return a.deadlineFrom < b.deadlineFrom
+	}
+	return a.job.ID < b.job.ID
 }
 
 // Simulator replays a job log against a changing number of executors.
@@ -85,6 +117,13 @@ type Simulator struct {
 
 	now time.Duration
 
+	// jobs is every admitted job by identity, which is how a reprioritisation
+	// finds one without searching every level for it.
+	jobs map[domain.JobID]*queued
+
+	// exemptWaiting is how many waiting jobs are exempt from cloud burst.
+	exemptWaiting int
+
 	// arrivalWindow is how far back the reported arrival rate looks.
 	arrivalWindow time.Duration
 	recent        []time.Duration
@@ -92,8 +131,11 @@ type Simulator struct {
 	submitted int
 	completed int
 	breached  int
-	waits     []float64
-	peakDepth int
+
+	breachedAsSubmitted int
+	reprioritised       int
+	waits               []float64
+	peakDepth           int
 }
 
 // defaultArrivalWindow is how far back the reported arrival rate looks. Long
@@ -113,6 +155,7 @@ func New(jobs []workload.Job, deadlines Deadlines) *Simulator {
 		deadlines:     deadlines,
 		arrivals:      ordered,
 		levels:        map[domain.Priority][]*queued{},
+		jobs:          map[domain.JobID]*queued{},
 		arrivalWindow: defaultArrivalWindow,
 	}
 }
@@ -147,9 +190,9 @@ func (s *Simulator) Advance(to time.Duration, executors int) Progress {
 		s.peakDepth = depth
 	}
 
-	finished := s.serve(interval, executors)
+	finished, lateStarts := s.serve(interval, executors)
 	progress := Progress{Completed: len(finished), Finished: finished}
-	progress.Breached = s.countBreaches(to)
+	progress.Breached = lateStarts + s.countBreaches(to)
 	return progress
 }
 
@@ -157,9 +200,12 @@ func (s *Simulator) Advance(to time.Duration, executors int) Progress {
 func (s *Simulator) admitArrivals(to time.Duration) {
 	for s.next < len(s.arrivals) && s.arrivals[s.next].SubmittedAt <= to {
 		job := s.arrivals[s.next]
-		s.levels[job.Priority] = append(s.levels[job.Priority], &queued{
+		item := &queued{
 			job: job, remaining: job.Seconds, submitted: job.Priority,
-		})
+			deadlineFrom: job.SubmittedAt, waiting: true,
+		}
+		s.levels[job.Priority] = append(s.levels[job.Priority], item)
+		s.jobs[job.ID] = item
 		s.recent = append(s.recent, job.SubmittedAt)
 		s.submitted++
 		s.next++
@@ -182,12 +228,18 @@ func (s *Simulator) admitArrivals(to time.Duration) {
 // executor cannot give one job more than the time that actually passed. Within
 // that, an executor is free to finish several short jobs in one interval,
 // which is exactly what a real one does.
-func (s *Simulator) serve(interval float64, executors int) []domain.JobID {
+//
+// It also returns how many jobs breached by starting late. A job judged only
+// while waiting or running at the end of an interval is missed if it starts
+// past its deadline and finishes inside the same interval — a short job, late,
+// is still late.
+func (s *Simulator) serve(interval float64, executors int) ([]domain.JobID, int) {
 	budget := float64(executors) * interval
 	if budget <= 0 {
-		return nil
+		return nil, 0
 	}
 	var completed []domain.JobID
+	lateStarts := 0
 
 	// Work already in progress comes first: an executor that has started a job
 	// stays on it.
@@ -231,10 +283,17 @@ func (s *Simulator) serve(interval float64, executors int) []domain.JobID {
 			if !item.hasStarted {
 				item.started = s.now
 				item.hasStarted = true
+				if s.judgeStart(item) {
+					lateStarts++
+				}
 			}
 			item.remaining -= work
 			budget -= work
 			s.levels[priority] = s.levels[priority][1:]
+			item.waiting = false
+			if item.exempt {
+				s.exemptWaiting--
+			}
 
 			if item.remaining <= 1e-9 {
 				s.complete(item)
@@ -249,7 +308,24 @@ func (s *Simulator) serve(interval float64, executors int) []domain.JobID {
 	}
 
 	s.pruneEmptyLevels()
-	return completed
+	return completed, lateStarts
+}
+
+// judgeStart settles whether a job starting now has breached: against the
+// level it holds, from its deadline origin, and against the level it was
+// submitted at, from its submission. Nothing about either can change once it
+// has started. It reports whether the first is a breach not already counted.
+func (s *Simulator) judgeStart(item *queued) bool {
+	if s.now-item.job.SubmittedAt > s.deadlines.For(item.submitted) && !item.breachedAsSubmitted {
+		item.breachedAsSubmitted = true
+		s.breachedAsSubmitted++
+	}
+	if item.breached || s.now-item.deadlineFrom <= s.deadlines.For(item.job.Priority) {
+		return false
+	}
+	item.breached = true
+	s.breached++
+	return true
 }
 
 func (s *Simulator) complete(item *queued) {
@@ -279,7 +355,7 @@ func (s *Simulator) countBreaches(now time.Duration) int {
 			if item.breached {
 				continue
 			}
-			if now-item.job.SubmittedAt <= deadline {
+			if now-item.deadlineFrom <= deadline {
 				break
 			}
 			item.breached = true
@@ -287,17 +363,11 @@ func (s *Simulator) countBreaches(now time.Duration) int {
 		}
 	}
 
-	// Work in progress can breach too: an executor picking a job up after its
-	// deadline has already missed it.
-	for _, item := range s.running {
-		if item.breached {
-			continue
-		}
-		if now-item.job.SubmittedAt > s.deadlines.For(item.job.Priority) {
-			item.breached = true
-			breached++
-		}
-	}
+	// Work in progress is not judged here. A job picked up after its deadline
+	// was judged when it started, by judgeStart; one picked up in time has not
+	// breached however long it then runs, because a deadline is on the wait
+	// and not on the work. Judging running work by its age since submission
+	// counted every long job as late.
 
 	s.breached += breached
 	return breached
@@ -316,14 +386,11 @@ func (s *Simulator) Snapshot(now time.Duration) map[domain.Priority]domain.Queue
 		if len(level) == 0 {
 			continue
 		}
-		// FIFO, so the head is the oldest.
-		oldest := (now - level[0].job.SubmittedAt).Seconds()
-		if oldest < 0 {
-			oldest = 0
-		}
+		// In deadline order, so the head is the one closest to breaching, and
+		// its age is the one the deadline is judged on.
 		out[priority] = domain.QueueSnapshot{
 			Depth:               len(level),
-			OldestJobAgeSeconds: oldest,
+			OldestJobAgeSeconds: ageOf(level[0], now),
 			ArrivalRate:         arrivalsByLevel[priority] / s.arrivalWindow.Seconds(),
 		}
 	}
@@ -339,6 +406,76 @@ func (s *Simulator) Snapshot(now time.Duration) map[domain.Priority]domain.Queue
 		}
 	}
 	return out
+}
+
+func ageOf(item *queued, now time.Duration) float64 {
+	return max(0, (now - item.deadlineFrom).Seconds())
+}
+
+// SnapshotByBurst is Snapshot split in two: work that may be the reason cloud
+// capacity is bought, and work exempt from that.
+//
+// Arrival rates stay with the counted work. Work arrives as it was submitted,
+// and exemption is something intent does to it later; the load arriving is
+// what brings it. With nothing exempt the counted half is Snapshot exactly and
+// the exempt half is empty, so the autoscaler is shown what it always was.
+func (s *Simulator) SnapshotByBurst(now time.Duration) (counted, exempt map[domain.Priority]domain.QueueSnapshot) {
+	if s.exemptWaiting == 0 {
+		return s.Snapshot(now), map[domain.Priority]domain.QueueSnapshot{}
+	}
+	arrivalsByLevel := s.recentArrivalsByLevel()
+	counted = map[domain.Priority]domain.QueueSnapshot{}
+	exempt = map[domain.Priority]domain.QueueSnapshot{}
+
+	for priority, level := range s.levels {
+		var kinds [2]domain.QueueSnapshot
+		for _, item := range level {
+			kind := &kinds[0]
+			if item.exempt {
+				kind = &kinds[1]
+			}
+			if kind.Depth == 0 {
+				kind.OldestJobAgeSeconds = ageOf(item, now)
+			}
+			kind.Depth++
+		}
+		if kinds[0].Depth > 0 {
+			kinds[0].ArrivalRate = arrivalsByLevel[priority] / s.arrivalWindow.Seconds()
+			counted[priority] = kinds[0]
+		}
+		if kinds[1].Depth > 0 {
+			exempt[priority] = kinds[1]
+		}
+	}
+	for priority, count := range arrivalsByLevel {
+		if _, present := counted[priority]; present || count == 0 {
+			continue
+		}
+		counted[priority] = domain.QueueSnapshot{ArrivalRate: count / s.arrivalWindow.Seconds()}
+	}
+	return counted, exempt
+}
+
+// Waiting is what intent has done to the work still waiting: how many jobs sit
+// below and above the priority they were submitted with, and which are exempt
+// from cloud burst, by the priority they hold now. Like
+// DepthBySubmittedPriority, the mine's record rather than part of the seam.
+func (s *Simulator) Waiting() (decayed, promoted int, exempt map[domain.Priority]int) {
+	exempt = map[domain.Priority]int{}
+	for priority, level := range s.levels {
+		for _, item := range level {
+			switch {
+			case priority < item.submitted:
+				decayed++
+			case priority > item.submitted:
+				promoted++
+			}
+			if item.exempt {
+				exempt[priority]++
+			}
+		}
+	}
+	return decayed, promoted, exempt
 }
 
 // DepthBySubmittedPriority is the waiting work counted by the priority each
@@ -390,6 +527,9 @@ func (s *Simulator) Stats() Stats {
 		Completed: s.completed,
 		Breached:  s.breached,
 		PeakDepth: s.peakDepth,
+
+		BreachedAsSubmitted: s.breachedAsSubmitted,
+		Reprioritised:       s.reprioritised,
 	}
 	if len(s.waits) == 0 {
 		return stats
@@ -477,55 +617,103 @@ func (s *Simulator) Capabilities() orchestrator.Capabilities {
 //
 // A job that has already been counted as breached stays counted. Promotion is
 // meant to prevent a missed deadline, not to erase one.
+//
+// Updates arrive by the thousand once intent is on, so a batch is applied in
+// one pass: every moving job is taken out of its level, and the movers are
+// merged into their new levels in deadline order.
 func (s *Simulator) Reprioritise(at time.Duration, updates []orchestrator.PriorityUpdate) orchestrator.Applied {
 	applied := orchestrator.Applied{}
+	leaving := map[domain.Priority]bool{}
+	var moving []*queued
 
 	for _, update := range updates {
-		item, from, index := s.findWaiting(update.JobID)
-		if item == nil {
+		item := s.jobs[update.JobID]
+		if item == nil || !item.waiting {
 			applied.TooLate++
 			continue
 		}
-		if from == update.Priority {
-			continue
-		}
 
-		s.levels[from] = append(s.levels[from][:index], s.levels[from][index+1:]...)
-		item.job.Priority = update.Priority
-		s.insertByArrival(update.Priority, item)
-		applied.Changed++
+		changed := false
+		if update.BurstExempt != item.exempt {
+			item.exempt = update.BurstExempt
+			if item.exempt {
+				s.exemptWaiting++
+			} else {
+				s.exemptWaiting--
+			}
+			changed = true
+		}
+		if update.Priority != item.job.Priority {
+			if !item.moving {
+				leaving[item.job.Priority] = true
+				item.moving = true
+				moving = append(moving, item)
+			}
+			item.job.Priority = update.Priority
+			if !item.reprioritised {
+				item.reprioritised = true
+				s.reprioritised++
+			}
+			if update.RestartDeadline {
+				item.deadlineFrom = at
+			}
+			changed = true
+		}
+		if changed {
+			applied.Changed++
+		}
 	}
+	if len(moving) == 0 {
+		return applied
+	}
+
+	for _, priority := range sortedKeys(leaving) {
+		kept := s.levels[priority][:0]
+		for _, item := range s.levels[priority] {
+			if !item.moving {
+				kept = append(kept, item)
+			}
+		}
+		s.levels[priority] = kept
+	}
+
+	sort.SliceStable(moving, func(i, j int) bool { return before(moving[i], moving[j]) })
+	arriving := map[domain.Priority][]*queued{}
+	for _, item := range moving {
+		item.moving = false
+		arriving[item.job.Priority] = append(arriving[item.job.Priority], item)
+	}
+	for _, priority := range sortedKeys(arriving) {
+		s.levels[priority] = merge(s.levels[priority], arriving[priority])
+	}
+	s.pruneEmptyLevels()
 	return applied
 }
 
-// findWaiting locates a job that has not yet been dispatched.
-func (s *Simulator) findWaiting(id domain.JobID) (*queued, domain.Priority, int) {
-	// Iterating the map is safe here because the search is exhaustive and its
-	// result does not depend on the order: a job is in exactly one level.
-	for priority, level := range s.levels {
-		for i, item := range level {
-			if item.job.ID == id {
-				return item, priority, i
-			}
+// merge is two levels, each in deadline order, as one.
+func merge(level, arriving []*queued) []*queued {
+	out := make([]*queued, 0, len(level)+len(arriving))
+	i, j := 0, 0
+	for i < len(level) && j < len(arriving) {
+		// Ties keep the job already waiting first: it was at the level before
+		// the one arriving.
+		if before(arriving[j], level[i]) {
+			out = append(out, arriving[j])
+			j++
+			continue
 		}
+		out = append(out, level[i])
+		i++
 	}
-	return nil, 0, 0
+	out = append(out, level[i:]...)
+	return append(out, arriving[j:]...)
 }
 
-// insertByArrival keeps a level FIFO by submission time, so a promoted job
-// takes its rightful place among work of its new priority rather than jumping
-// ahead of jobs that have been waiting at that level for longer.
-func (s *Simulator) insertByArrival(priority domain.Priority, item *queued) {
-	level := s.levels[priority]
-	at := len(level)
-	for i, existing := range level {
-		if existing.job.SubmittedAt > item.job.SubmittedAt {
-			at = i
-			break
-		}
+func sortedKeys[V any](m map[domain.Priority]V) []domain.Priority {
+	out := make([]domain.Priority, 0, len(m))
+	for priority := range m {
+		out = append(out, priority)
 	}
-	level = append(level, nil)
-	copy(level[at+1:], level[at:])
-	level[at] = item
-	s.levels[priority] = level
+	sort.Slice(out, func(i, j int) bool { return out[i] > out[j] })
+	return out
 }

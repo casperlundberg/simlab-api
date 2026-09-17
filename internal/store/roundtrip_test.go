@@ -67,6 +67,12 @@ func TestEveryFieldOfACycleSurvivesTheDatabase(t *testing.T) {
 		BreachExpected:  true,
 		Completed:       12,
 		Breached:        13,
+
+		BreachesExemptOnly: true,
+		Intent: &domain.CycleIntent{
+			Version: 3, Decayed: 14, Promoted: 2, Exempt: 5,
+			ExemptByPriority: map[domain.Priority]int{0: 5}, Changed: 7, TooLate: 1,
+		},
 	}
 	noZeroFields(t, "cycle", cycle)
 
@@ -120,6 +126,9 @@ func TestEveryFieldOfTheMetricsSurvivesTheDatabase(t *testing.T) {
 		CloudExecutorSeconds: 224280.0,
 		PeakLocalExecutors:   50,
 		PeakCloudExecutors:   200,
+
+		SLABreachesAsSubmitted: 1702,
+		JobsReprioritised:      5230,
 	}
 	noZeroFields(t, "metrics", metrics)
 

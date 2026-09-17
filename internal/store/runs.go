@@ -201,12 +201,21 @@ func (s *Store) SaveCycle(ctx context.Context, cycle domain.Cycle) error {
 		submitted = encoded
 	}
 
+	var intent any
+	if cycle.Intent != nil {
+		encoded, err := json.Marshal(cycle.Intent)
+		if err != nil {
+			return fmt.Errorf("encoding the intent of cycle %d: %w", cycle.Sequence, err)
+		}
+		intent = encoded
+	}
+
 	_, err = s.pool.Exec(ctx, `
 		INSERT INTO run_cycles (run_id, sequence, at, queues, local_ready, cloud_ready,
 			local_pending, cloud_pending, action, plan_local, plan_cloud, reason,
 			constraint_name, settings_version, breach_expected, completed, breached,
-			submitted_depths)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+			submitted_depths, intent, breaches_exempt_only)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
 		ON CONFLICT (run_id, sequence) DO UPDATE SET
 			at = EXCLUDED.at, queues = EXCLUDED.queues,
 			local_ready = EXCLUDED.local_ready, cloud_ready = EXCLUDED.cloud_ready,
@@ -217,11 +226,13 @@ func (s *Store) SaveCycle(ctx context.Context, cycle domain.Cycle) error {
 			settings_version = EXCLUDED.settings_version,
 			breach_expected = EXCLUDED.breach_expected,
 			completed = EXCLUDED.completed, breached = EXCLUDED.breached,
-			submitted_depths = EXCLUDED.submitted_depths`,
+			submitted_depths = EXCLUDED.submitted_depths,
+			intent = EXCLUDED.intent, breaches_exempt_only = EXCLUDED.breaches_exempt_only`,
 		cycle.RunID, cycle.Sequence, cycle.At, queues, cycle.LocalReady, cycle.CloudReady,
 		cycle.LocalPending, cycle.CloudPending, cycle.Action, cycle.PlanLocal,
 		cycle.PlanCloud, cycle.Reason, cycle.Constraint, cycle.SettingsVersion,
-		cycle.BreachExpected, cycle.Completed, cycle.Breached, submitted)
+		cycle.BreachExpected, cycle.Completed, cycle.Breached, submitted,
+		intent, cycle.BreachesExemptOnly)
 	if err != nil {
 		return fmt.Errorf("saving cycle %d of run %q: %w", cycle.Sequence, cycle.RunID, err)
 	}
@@ -240,7 +251,8 @@ func (s *Store) Cycles(ctx context.Context, runID string, from, limit int) ([]do
 	rows, err := s.pool.Query(ctx, `
 		SELECT run_id, sequence, at, queues, local_ready, cloud_ready, local_pending,
 			cloud_pending, action, plan_local, plan_cloud, reason, constraint_name,
-			settings_version, breach_expected, completed, breached, submitted_depths
+			settings_version, breach_expected, completed, breached, submitted_depths,
+			intent, breaches_exempt_only
 		FROM run_cycles
 		WHERE run_id = $1 AND sequence > $2
 		ORDER BY sequence
@@ -256,12 +268,14 @@ func (s *Store) Cycles(ctx context.Context, runID string, from, limit int) ([]do
 			cycle     domain.Cycle
 			queues    []byte
 			submitted []byte
+			intent    []byte
 		)
 		if err := rows.Scan(&cycle.RunID, &cycle.Sequence, &cycle.At, &queues,
 			&cycle.LocalReady, &cycle.CloudReady, &cycle.LocalPending, &cycle.CloudPending,
 			&cycle.Action, &cycle.PlanLocal, &cycle.PlanCloud, &cycle.Reason,
 			&cycle.Constraint, &cycle.SettingsVersion, &cycle.BreachExpected,
-			&cycle.Completed, &cycle.Breached, &submitted); err != nil {
+			&cycle.Completed, &cycle.Breached, &submitted, &intent,
+			&cycle.BreachesExemptOnly); err != nil {
 			return nil, fmt.Errorf("reading a cycle of run %q: %w", runID, err)
 		}
 
@@ -282,6 +296,12 @@ func (s *Store) Cycles(ctx context.Context, runID string, from, limit int) ([]do
 				return nil, fmt.Errorf("reading the submitted depths of cycle %d: %w", cycle.Sequence, err)
 			}
 		}
+		if intent != nil {
+			cycle.Intent = &domain.CycleIntent{}
+			if err := json.Unmarshal(intent, cycle.Intent); err != nil {
+				return nil, fmt.Errorf("reading the intent of cycle %d: %w", cycle.Sequence, err)
+			}
+		}
 		cycles = append(cycles, cycle)
 	}
 	return cycles, rows.Err()
@@ -293,8 +313,9 @@ func (s *Store) SaveMetrics(ctx context.Context, metrics domain.Metrics) error {
 		INSERT INTO run_metrics (run_id, jobs_submitted, jobs_completed, sla_breaches,
 			breach_rate, mean_wait_seconds, p95_wait_seconds, max_wait_seconds,
 			peak_queue_depth, local_executor_seconds, cloud_executor_seconds,
-			peak_local_executors, peak_cloud_executors, scaling_actions, cycles)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+			peak_local_executors, peak_cloud_executors, scaling_actions, cycles,
+			sla_breaches_as_submitted, jobs_reprioritised)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
 		ON CONFLICT (run_id) DO UPDATE SET
 			jobs_submitted = EXCLUDED.jobs_submitted, jobs_completed = EXCLUDED.jobs_completed,
 			sla_breaches = EXCLUDED.sla_breaches, breach_rate = EXCLUDED.breach_rate,
@@ -306,12 +327,15 @@ func (s *Store) SaveMetrics(ctx context.Context, metrics domain.Metrics) error {
 			cloud_executor_seconds = EXCLUDED.cloud_executor_seconds,
 			peak_local_executors = EXCLUDED.peak_local_executors,
 			peak_cloud_executors = EXCLUDED.peak_cloud_executors,
-			scaling_actions = EXCLUDED.scaling_actions, cycles = EXCLUDED.cycles`,
+			scaling_actions = EXCLUDED.scaling_actions, cycles = EXCLUDED.cycles,
+			sla_breaches_as_submitted = EXCLUDED.sla_breaches_as_submitted,
+			jobs_reprioritised = EXCLUDED.jobs_reprioritised`,
 		metrics.RunID, metrics.JobsSubmitted, metrics.JobsCompleted, metrics.SLABreaches,
 		metrics.BreachRate, metrics.MeanWaitSeconds, metrics.P95WaitSeconds,
 		metrics.MaxWaitSeconds, metrics.PeakQueueDepth, metrics.LocalExecutorSeconds,
 		metrics.CloudExecutorSeconds, metrics.PeakLocalExecutors, metrics.PeakCloudExecutors,
-		metrics.ScalingActions, metrics.Cycles)
+		metrics.ScalingActions, metrics.Cycles, metrics.SLABreachesAsSubmitted,
+		metrics.JobsReprioritised)
 	if err != nil {
 		return fmt.Errorf("saving the metrics of run %q: %w", metrics.RunID, err)
 	}
@@ -325,14 +349,16 @@ func (s *Store) Metrics(ctx context.Context, runID string) (domain.Metrics, erro
 		SELECT run_id, jobs_submitted, jobs_completed, sla_breaches, breach_rate,
 			mean_wait_seconds, p95_wait_seconds, max_wait_seconds, peak_queue_depth,
 			local_executor_seconds, cloud_executor_seconds, peak_local_executors,
-			peak_cloud_executors, scaling_actions, cycles
+			peak_cloud_executors, scaling_actions, cycles,
+			COALESCE(sla_breaches_as_submitted, sla_breaches), COALESCE(jobs_reprioritised, 0)
 		FROM run_metrics WHERE run_id = $1`, runID,
 	).Scan(&metrics.RunID, &metrics.JobsSubmitted, &metrics.JobsCompleted,
 		&metrics.SLABreaches, &metrics.BreachRate, &metrics.MeanWaitSeconds,
 		&metrics.P95WaitSeconds, &metrics.MaxWaitSeconds, &metrics.PeakQueueDepth,
 		&metrics.LocalExecutorSeconds, &metrics.CloudExecutorSeconds,
 		&metrics.PeakLocalExecutors, &metrics.PeakCloudExecutors,
-		&metrics.ScalingActions, &metrics.Cycles)
+		&metrics.ScalingActions, &metrics.Cycles, &metrics.SLABreachesAsSubmitted,
+		&metrics.JobsReprioritised)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Metrics{}, fmt.Errorf("%w: metrics for run %q", ErrNotFound, runID)
 	}

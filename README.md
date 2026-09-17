@@ -45,8 +45,15 @@ clustered around them, and a workforce — people on foot, crewed vehicles and
 autonomous haulers — moving through them. Each event carries a magnitude, and
 who it exposes is judged twice with the rockburst handbook's ground-motion
 scaling law: by the simulator, from where the event really was, and by the
-mine, from its estimate and a 50 m allowance for location error. Nothing yet
-changes a job's priority from that judgement.
+mine, from its estimate and a 50 m allowance for location error.
+
+The mine acts on that judgement through **intent**: work for events whose
+hazard zone reaches no protected person or vehicle, or where they are heading,
+decays; optionally, work for events that put someone at high risk is promoted,
+and either kind can be exempted from buying cloud capacity. Intent can be
+changed while a run is in flight, and every change is recorded with the cycle
+it took effect from so the run can still be reproduced.
+[`docs/intent.md`](docs/intent.md) has the model and every setting.
 
 Because a scenario carries a seed, two runs replay exactly the same jobs. The
 difference between their results is attributable to the settings that changed
@@ -55,6 +62,7 @@ anecdote.
 
 ## Documentation
 
+- [`docs/intent.md`](docs/intent.md) — how the mine reorders its work: protected volumes, decay, promotion, exemption from cloud burst
 - [`docs/interactions.md`](docs/interactions.md) — sequence diagrams for a simulation run, a live run, and comparing two policies
 - [`docs/development.md`](docs/development.md) — working on it, driving it by hand against a real autoscaler
 - [`api/openapi.yaml`](api/openapi.yaml) — the HTTP contract, checked against the routes by a test

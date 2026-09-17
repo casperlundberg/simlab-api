@@ -75,6 +75,14 @@ type PriorityUpdate struct {
 	JobID    domain.JobID
 	Priority domain.Priority
 	Reason   string
+
+	// RestartDeadline measures the job's deadline from this change rather
+	// than from its submission, when the priority changes.
+	RestartDeadline bool
+
+	// BurstExempt is whether the job may be the reason cloud capacity is
+	// bought. An update may change only this.
+	BurstExempt bool
 }
 
 // Applied is what an orchestrator did with a batch of updates.
@@ -114,6 +122,14 @@ type Stats struct {
 	Completed int
 	Breached  int
 
+	// BreachedAsSubmitted is jobs that waited past the deadline of the level
+	// they were submitted at, measured from submission, whatever intent did
+	// to them since.
+	BreachedAsSubmitted int
+
+	// Reprioritised is how many jobs had their priority changed at least once.
+	Reprioritised int
+
 	MeanWaitSeconds float64
 	P95WaitSeconds  float64
 	MaxWaitSeconds  float64
@@ -139,8 +155,12 @@ type Orchestrator interface {
 	// Reprioritise applies the mine's intent to work already queued.
 	Reprioritise(at time.Duration, updates []PriorityUpdate) Applied
 
-	// Snapshot is the queue as the autoscaler is shown it.
+	// Snapshot is the waiting work by the priority it holds now.
 	Snapshot(now time.Duration) map[domain.Priority]domain.QueueSnapshot
+
+	// SnapshotByBurst is the same work as the autoscaler is shown it: what may
+	// be the reason cloud capacity is bought, and what is exempt from that.
+	SnapshotByBurst(now time.Duration) (counted, exempt map[domain.Priority]domain.QueueSnapshot)
 
 	// Done reports whether there is nothing left to run.
 	Done() bool

@@ -35,6 +35,15 @@ type recorder struct {
 
 	entities   []domain.Entity
 	provenance *domain.Provenance
+
+	intentChanges []domain.IntentChange
+}
+
+func (r *recorder) SaveIntentChange(_ context.Context, _ string, change domain.IntentChange) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.intentChanges = append(r.intentChanges, change)
+	return nil
 }
 
 func (r *recorder) SaveLayout(_ context.Context, _ string, layout domain.Layout) error {

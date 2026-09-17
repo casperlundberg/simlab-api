@@ -20,6 +20,7 @@ import (
 	"github.com/casperlundberg/simlab-api/internal/autoscaler"
 	"github.com/casperlundberg/simlab-api/internal/buildinfo"
 	"github.com/casperlundberg/simlab-api/internal/domain"
+	"github.com/casperlundberg/simlab-api/internal/intent"
 	"github.com/casperlundberg/simlab-api/internal/queue"
 	"github.com/casperlundberg/simlab-api/internal/workload"
 )
@@ -40,6 +41,15 @@ type Spec struct {
 	// Settings is a patch applied to the ephemeral target a simulation run
 	// creates. It is how one scenario is replayed under different policies.
 	Settings json.RawMessage
+
+	// Intent is how the mine reorders its queued work, and the changes to it
+	// planned for later cycles. Nil reorders nothing, as every run did before
+	// intent existed.
+	Intent *domain.RunIntent
+
+	// Control, when set, is how intent is changed while the run is in
+	// flight. The run makes its own when it is not.
+	Control *intent.Control
 }
 
 // Recorder is where a run's results go.
@@ -64,6 +74,9 @@ type Recorder interface {
 	// SaveProvenance records which code produced the run and what it was
 	// given, so it can be rebuilt and replayed.
 	SaveProvenance(ctx context.Context, runID string, provenance domain.Provenance) error
+
+	// SaveIntentChange records intent as it is from a cycle onwards.
+	SaveIntentChange(ctx context.Context, runID string, change domain.IntentChange) error
 }
 
 // Publisher is how a run in flight reaches whoever is watching it.
@@ -195,7 +208,16 @@ func (e *Engine) simulate(ctx context.Context, spec Spec) (domain.Metrics, error
 	}
 
 	mine, scenario := spec.Mine, spec.Scenario
-	if err := e.recorder.SaveProvenance(ctx, spec.Run.ID, e.provenance(ctx, settings, &mine, &scenario)); err != nil {
+	runIntent := spec.Intent
+	if runIntent == nil {
+		runIntent = &domain.RunIntent{Settings: domain.IntentOffSettings()}
+	}
+	if err := runIntent.Validate(); err != nil {
+		return domain.Metrics{}, err
+	}
+	provenance := e.provenance(ctx, settings, &mine, &scenario)
+	provenance.Intent = runIntent
+	if err := e.recorder.SaveProvenance(ctx, spec.Run.ID, provenance); err != nil {
 		return domain.Metrics{}, err
 	}
 
@@ -213,6 +235,11 @@ func (e *Engine) simulate(ctx context.Context, spec Spec) (domain.Metrics, error
 	}
 
 	simulator := queue.New(generated.Jobs, deadlines)
+	control := spec.Control
+	if control == nil {
+		control = intent.NewControl(runIntent.Settings)
+	}
+	intents := newIntentLoop(runIntent, control, intent.New(generated, catalogue, runIntent.Settings))
 	interval := spec.Run.DecisionInterval
 	start := spec.Run.SimulatedStart
 	if start.IsZero() {
@@ -264,11 +291,20 @@ func (e *Engine) simulate(ctx context.Context, spec Spec) (domain.Metrics, error
 			break
 		}
 
+		// Intent acts on what the mine knows once this interval's work is in,
+		// and before the autoscaler is shown the queue, so the queue it
+		// decides against is the one intent has just left.
+		summary, err := e.applyIntent(ctx, spec.Run.ID, sequence, elapsed, intents, simulator, catalogue)
+		if err != nil {
+			return metrics, fmt.Errorf("cycle %d: %w", sequence, err)
+		}
+
 		snapshot := simulator.Snapshot(elapsed)
 		submitted := simulator.DepthBySubmittedPriority()
+		counted, exempt := simulator.SnapshotByBurst(elapsed)
 		result, err := e.autoscaler.Cycle(ctx, spec.Run.TargetID, autoscaler.CycleRequest{
 			At:       start.Add(elapsed),
-			Workload: toWorkload(snapshot, spec.Scenario.JobSeconds),
+			Workload: toWorkload(counted, exempt, spec.Scenario.JobSeconds),
 		})
 		if err != nil {
 			return metrics, fmt.Errorf("cycle %d: %w", sequence, err)
@@ -277,6 +313,7 @@ func (e *Engine) simulate(ctx context.Context, spec Spec) (domain.Metrics, error
 
 		cycle := toCycle(spec.Run.ID, sequence, start.Add(elapsed), snapshot, result, progress)
 		cycle.SubmittedDepths = submitted
+		cycle.Intent = summary
 		if err := e.recorder.SaveCycle(ctx, cycle); err != nil {
 			return metrics, err
 		}
@@ -453,22 +490,105 @@ func (e *Engine) publish(event Event) {
 	}
 }
 
-// toWorkload turns a queue snapshot into what the autoscaler decides against.
-func toWorkload(snapshot map[domain.Priority]domain.QueueSnapshot, jobSeconds float64) *autoscaler.Workload {
-	queues := make(map[string]autoscaler.QueueInfo, len(snapshot))
-	for priority, level := range snapshot {
-		queues[strconv.Itoa(int(priority))] = autoscaler.QueueInfo{
-			Depth:               level.Depth,
-			OldestJobAgeSeconds: level.OldestJobAgeSeconds,
-			ArrivalRate:         level.ArrivalRate,
+// toWorkload turns a queue snapshot into what the autoscaler decides against:
+// the work that may be the reason cloud capacity is bought, and the work exempt
+// from that. The exempt half is left out entirely when empty.
+func toWorkload(counted, exempt map[domain.Priority]domain.QueueSnapshot, jobSeconds float64) *autoscaler.Workload {
+	wire := func(snapshot map[domain.Priority]domain.QueueSnapshot) map[string]autoscaler.QueueInfo {
+		out := make(map[string]autoscaler.QueueInfo, len(snapshot))
+		for priority, level := range snapshot {
+			out[strconv.Itoa(int(priority))] = autoscaler.QueueInfo{
+				Depth:               level.Depth,
+				OldestJobAgeSeconds: level.OldestJobAgeSeconds,
+				ArrivalRate:         level.ArrivalRate,
+			}
 		}
+		return out
 	}
 
 	throughput := 1.0 / jobSeconds
 	if jobSeconds <= 0 || math.IsInf(throughput, 0) {
 		throughput = 1
 	}
-	return &autoscaler.Workload{Queues: queues, ExecutorThroughput: throughput}
+	workload := &autoscaler.Workload{Queues: wire(counted), ExecutorThroughput: throughput}
+	if len(exempt) > 0 {
+		workload.BurstExempt = wire(exempt)
+	}
+	return workload
+}
+
+// intentLoop is a run's intent over its cycles: the settings in force, the
+// planned changes still to come, and the planner acting on them.
+type intentLoop struct {
+	control  *intent.Control
+	planner  *intent.Planner
+	schedule []domain.IntentStep
+	next     int
+	version  int
+}
+
+func newIntentLoop(runIntent *domain.RunIntent, control *intent.Control, planner *intent.Planner) *intentLoop {
+	return &intentLoop{control: control, planner: planner, schedule: runIntent.Schedule}
+}
+
+// applyIntent brings intent's settings up to date for a cycle, recording any
+// change as in force from it, then plans and reorders the queue.
+func (e *Engine) applyIntent(ctx context.Context, runID string, sequence int, elapsed time.Duration,
+	loop *intentLoop, simulator *queue.Simulator, catalogue *workload.Catalogue) (*domain.CycleIntent, error) {
+	for loop.next < len(loop.schedule) && loop.schedule[loop.next].Cycle <= sequence {
+		step := loop.schedule[loop.next]
+		loop.next++
+		source := step.Source
+		if source == "" {
+			source = domain.IntentSourceSchedule
+		}
+		current, _, _ := loop.control.Current()
+		settings, err := current.Patched(step.Settings)
+		if err != nil {
+			return nil, fmt.Errorf("applying the intent planned for cycle %d: %w", step.Cycle, err)
+		}
+		if err := loop.control.Replay(settings, step.Version, source); err != nil {
+			return nil, fmt.Errorf("applying the intent planned for cycle %d: %w", step.Cycle, err)
+		}
+	}
+
+	settings, version, source := loop.control.Current()
+	if version != loop.version {
+		loop.planner.Configure(settings)
+		loop.version = version
+		change := domain.IntentChange{
+			Version: version, Cycle: sequence, Source: source, Settings: settings, RecordedAt: e.now(),
+		}
+		if err := e.recorder.SaveIntentChange(ctx, runID, change); err != nil {
+			return nil, err
+		}
+	}
+
+	plan := loop.planner.Plan(elapsed)
+	applied := simulator.Reprioritise(elapsed, plan.Updates)
+
+	if len(plan.Transitions) > 0 {
+		changed := make([]domain.SeismicEvent, 0, len(plan.Transitions))
+		for _, transition := range plan.Transitions {
+			changed = append(changed, catalogue.RecordIntent(transition.Event, transition.IntentTransition))
+		}
+		if err := e.recorder.SaveSeismicEvents(ctx, runID, changed); err != nil {
+			return nil, err
+		}
+	}
+
+	decayed, promoted, exempt := simulator.Waiting()
+	summary := &domain.CycleIntent{
+		Version: version, Decayed: decayed, Promoted: promoted,
+		Changed: applied.Changed, TooLate: applied.TooLate,
+	}
+	for _, count := range exempt {
+		summary.Exempt += count
+	}
+	if summary.Exempt > 0 {
+		summary.ExemptByPriority = exempt
+	}
+	return summary, nil
 }
 
 func toCycle(runID string, sequence int, at time.Time,
@@ -476,20 +596,21 @@ func toCycle(runID string, sequence int, at time.Time,
 	result autoscaler.CycleResult, progress queue.Progress) domain.Cycle {
 	return domain.Cycle{
 		RunID: runID, Sequence: sequence, At: at,
-		Queues:          snapshot,
-		LocalReady:      result.Observation.Capacity.LocalReady,
-		CloudReady:      result.Observation.Capacity.CloudReady,
-		LocalPending:    result.Observation.Capacity.LocalPending,
-		CloudPending:    result.Observation.Capacity.CloudPending,
-		Action:          result.Decision.Action,
-		PlanLocal:       result.Decision.Plan.LocalExecutors,
-		PlanCloud:       result.Decision.Plan.CloudExecutors,
-		Reason:          result.Decision.Reason,
-		Constraint:      result.Decision.Constraint,
-		SettingsVersion: result.Decision.SettingsVersion,
-		BreachExpected:  result.Decision.Projection.BreachExpected,
-		Completed:       progress.Completed,
-		Breached:        progress.Breached,
+		Queues:             snapshot,
+		LocalReady:         result.Observation.Capacity.LocalReady,
+		CloudReady:         result.Observation.Capacity.CloudReady,
+		LocalPending:       result.Observation.Capacity.LocalPending,
+		CloudPending:       result.Observation.Capacity.CloudPending,
+		Action:             result.Decision.Action,
+		PlanLocal:          result.Decision.Plan.LocalExecutors,
+		PlanCloud:          result.Decision.Plan.CloudExecutors,
+		Reason:             result.Decision.Reason,
+		Constraint:         result.Decision.Constraint,
+		SettingsVersion:    result.Decision.SettingsVersion,
+		BreachExpected:     result.Decision.Projection.BreachExpected,
+		BreachesExemptOnly: result.Decision.Projection.BreachesExemptOnly,
+		Completed:          progress.Completed,
+		Breached:           progress.Breached,
 	}
 }
 
@@ -516,6 +637,8 @@ func finalise(metrics *domain.Metrics, stats queue.Stats) {
 	metrics.JobsSubmitted = stats.Submitted
 	metrics.JobsCompleted = stats.Completed
 	metrics.SLABreaches = stats.Breached
+	metrics.SLABreachesAsSubmitted = stats.BreachedAsSubmitted
+	metrics.JobsReprioritised = stats.Reprioritised
 	metrics.MeanWaitSeconds = stats.MeanWaitSeconds
 	metrics.P95WaitSeconds = stats.P95WaitSeconds
 	metrics.MaxWaitSeconds = stats.MaxWaitSeconds

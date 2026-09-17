@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/casperlundberg/simlab-api/internal/domain"
+	"github.com/casperlundberg/simlab-api/internal/intent"
 	"github.com/casperlundberg/simlab-api/internal/run"
 	"github.com/casperlundberg/simlab-api/internal/store"
 )
@@ -44,6 +45,10 @@ type Manager struct {
 	// Done for why the event stream cannot be used for this.
 	done map[string]chan struct{}
 
+	// intents is how an in-flight simulation's intent is changed while it
+	// runs.
+	intents map[string]*intent.Control
+
 	// finished lets Shutdown wait for in-flight runs.
 	wg sync.WaitGroup
 }
@@ -55,8 +60,9 @@ func New(store *store.Store, engine Executor, log *slog.Logger) *Manager {
 	}
 	return &Manager{
 		store: store, engine: engine, log: log,
-		active: map[string]context.CancelFunc{},
-		done:   map[string]chan struct{}{},
+		active:  map[string]context.CancelFunc{},
+		done:    map[string]chan struct{}{},
+		intents: map[string]*intent.Control{},
 	}
 }
 
@@ -77,6 +83,12 @@ func (m *Manager) Start(spec run.Spec) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.active[spec.Run.ID] = cancel
 	m.done[spec.Run.ID] = make(chan struct{})
+	if spec.Intent != nil {
+		if spec.Control == nil {
+			spec.Control = intent.NewControl(spec.Intent.Settings)
+		}
+		m.intents[spec.Run.ID] = spec.Control
+	}
 	m.mu.Unlock()
 
 	m.wg.Add(1)
@@ -85,6 +97,7 @@ func (m *Manager) Start(spec run.Spec) error {
 		defer func() {
 			m.mu.Lock()
 			delete(m.active, spec.Run.ID)
+			delete(m.intents, spec.Run.ID)
 			if done, waiting := m.done[spec.Run.ID]; waiting {
 				delete(m.done, spec.Run.ID)
 				// Closed last, and while still holding the lock, so that
@@ -141,6 +154,15 @@ func (m *Manager) IsActive(runID string) bool {
 	defer m.mu.Unlock()
 	_, running := m.active[runID]
 	return running
+}
+
+// Intent is how an in-flight run's intent is changed, or false when the run
+// is not in flight or has no intent to change.
+func (m *Manager) Intent(runID string) (*intent.Control, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	control, ok := m.intents[runID]
+	return control, ok
 }
 
 // Done returns a channel that closes when this run is no longer in flight, or
@@ -205,7 +227,13 @@ func (m *Manager) Prepare(ctx context.Context, runID string) (run.Spec, error) {
 			scenario.ID, err)
 	}
 
+	runIntent, err := m.store.RunIntent(ctx, runID)
+	if err != nil {
+		return run.Spec{}, err
+	}
+
 	spec.Scenario = scenario
 	spec.Mine = mine
+	spec.Intent = runIntent
 	return spec, nil
 }

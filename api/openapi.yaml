@@ -380,6 +380,65 @@ paths:
                 properties:
                   entities: { type: array, items: { $ref: "#/components/schemas/Entity" } }
 
+  /api/runs/{id}/intent:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    get:
+      tags: [runs]
+      summary: How a run's mine reorders its queued work, and every change to that
+      description: |
+        `settings` and `version` are what is in force now: for a run in flight,
+        the live settings, which may be a change made since the last cycle and
+        not yet applied. `changes` is every version that took effect, with the
+        cycle it took effect from; replaying them as `intent_schedule`
+        reproduces the run.
+      responses:
+        "200":
+          description: The run's intent.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  run_id: { type: string }
+                  active: { type: boolean, description: Whether the run is in flight, and so whether its intent can still change. }
+                  settings: { $ref: "#/components/schemas/IntentSettings" }
+                  version: { type: integer }
+                  schedule: { type: array, items: { $ref: "#/components/schemas/IntentStep" } }
+                  changes: { type: array, items: { $ref: "#/components/schemas/IntentChange" } }
+        "404":
+          description: No such run, or a live run or one created before intent existed, which reordered nothing.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    patch:
+      tags: [runs]
+      summary: Change an in-flight run's intent
+      description: |
+        A patch onto the settings in force: fields not named keep their value,
+        and a list named replaces the list. It takes effect from the run's next
+        cycle, never part-way through one, and is recorded with that cycle so
+        the run can still be reproduced. Pass `expected_version` to make the
+        write a compare-and-swap.
+      parameters:
+        - name: expected_version
+          in: query
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/IntentSettings" } } }
+      responses:
+        "200":
+          description: Accepted; in force from the next cycle.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  run_id: { type: string }
+                  active: { type: boolean }
+                  settings: { $ref: "#/components/schemas/IntentSettings" }
+                  version: { type: integer }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { description: The run is not in flight, or the intent changed since the version being edited., content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
   /api/runs/{id}/events:
     parameters: [{ $ref: "#/components/parameters/ID" }]
     get:
@@ -700,6 +759,14 @@ components:
             When each pick was processed, in the order of `sensors`; null for
             one still waiting. Null as a whole for an event recorded before this
             was tracked.
+        intent:
+          type: [array, "null"]
+          items: { $ref: "#/components/schemas/IntentTransition" }
+          description: |
+            Every change of mind the mine's intent had about this event's work,
+            in order. The state at a moment is the last transition at or before
+            it; before the first, the work kept its submitted priority. Null for
+            an event recorded before intent was.
 
     Burst:
       type: object
@@ -811,6 +878,15 @@ components:
             The autoscaler settings this run is executed under. This is how one
             scenario is replayed under different policies — the comparison the
             whole application exists to make.
+        intent:
+          $ref: "#/components/schemas/IntentSettings"
+          description: |
+            How the mine reorders its queued work, as a patch onto the default:
+            decay only, from estimates. A simulation run only.
+        intent_schedule:
+          type: array
+          items: { $ref: "#/components/schemas/IntentStep" }
+          description: Changes to intent planned for later cycles, applied in order.
       required: [mode]
 
     Build:
@@ -846,6 +922,107 @@ components:
           type: object
           description: The target's whole effective settings as the run began, not only the patch the run asked for.
         settings_version: { type: integer, format: int64 }
+        intent:
+          type: object
+          description: The intent the run was created with. Absent for a run that predates intent, which reordered nothing.
+          properties:
+            settings: { $ref: "#/components/schemas/IntentSettings" }
+            schedule: { type: array, items: { $ref: "#/components/schemas/IntentStep" } }
+
+    IntentSettings:
+      type: object
+      description: |
+        How the mine reorders work it has already queued. What is protected is
+        the union, over every protected person and vehicle, of where it is and
+        where its planned route takes it over the lookahead. An event whose
+        hazard zone at `protect_level` reaches none of that decays; one whose
+        zone at `promote_level` reaches it can be promoted. Distances are
+        three-dimensional.
+      properties:
+        mode:
+          type: string
+          enum: [off, decay, promote, both]
+          default: decay
+          description: Decay only relaxes, so it cannot trigger scaling that would not have happened anyway.
+        knowledge:
+          type: string
+          enum: [estimate, truth]
+          default: estimate
+          description: The mine's solved locations, or the simulator's ground truth from the moment an event happens — the oracle arm no real mine has.
+        pre_location:
+          type: boolean
+          default: false
+          description: Act before an event is located, taking the first sensor to trigger as its position and the distance to the fourth as how far out that may be.
+        pre_location_magnitude: { type: number, default: 1.5, description: The magnitude assumed before one is estimated. }
+        protect:
+          type: array
+          items: { type: string, enum: [person, crewed-vehicle, autonomous-vehicle] }
+          description: The kinds of entity whose safety decides what is important. Default all three.
+        lookahead_seconds: { type: number, default: 300, description: How far along its planned route an entity is protected. Zero protects only where things are now. }
+        protect_level: { type: string, enum: [moderate, high, very-high], default: moderate }
+        promote_level: { type: string, enum: [moderate, high, very-high], default: high }
+        margin_m: { type: number, default: 0, description: Metres added to every reach. }
+        location_uncertainty_m: { type: number, default: 50, description: How far a location may be out; zones are widened by it. }
+        decay_to: { type: integer, default: 0, description: The level decayed work moves to. Decay never raises a job. }
+        promote_to: { type: integer, default: 400, description: The level promoted work moves to. Promotion never lowers one. }
+        deadline_from:
+          type: string
+          enum: [arrival, change]
+          default: arrival
+          description: |
+            What a moved job's deadline is measured from. From arrival, a
+            promotion can never hide how long a job waited — and a job promoted
+            past its new deadline is late at once, which is a reason to scale
+            hard unless it is exempt from cloud burst.
+        burst_exempt:
+          type: array
+          items: { type: string, enum: [decayed, promoted] }
+          description: |
+            Jobs, by what intent did to them, that may use capacity but may not
+            be the reason cloud capacity is bought. They are still served, and
+            still counted as breaches when late.
+
+    IntentStep:
+      type: object
+      properties:
+        cycle: { type: integer, minimum: 1, description: The first cycle the change is in force for. }
+        settings: { $ref: "#/components/schemas/IntentSettings" }
+        version: { type: integer, description: The version to record it as, when replaying a recorded change. }
+        source: { type: string, description: What to record as having made it, when replaying a recorded change. }
+      required: [cycle, settings]
+
+    IntentChange:
+      type: object
+      description: Intent as it was from one cycle of a run onwards.
+      properties:
+        version: { type: integer }
+        cycle: { type: integer }
+        source: { type: string, enum: [initial, schedule, operator] }
+        settings: { $ref: "#/components/schemas/IntentSettings" }
+        recorded_at: { type: string, format: date-time }
+
+    IntentTransition:
+      type: object
+      description: The mine's intent changing its mind about one event's work.
+      properties:
+        at_seconds: { type: number }
+        state: { type: string, enum: [unknown, kept, decayed, promoted] }
+        basis: { type: string, enum: [location, sensors, truth, "off"], description: What it was judged from; "off" when intent was switched off. }
+        entity: { type: string, description: The protected entity whose path came nearest. Absent when nothing is protected. }
+        distance_m: { type: number }
+        reach_m: { type: number, description: How far the deciding level of ground motion reaches from the event. }
+
+    CycleIntent:
+      type: object
+      description: What intent had done to the queue at one cycle.
+      properties:
+        version: { type: integer }
+        decayed: { type: integer, description: Waiting jobs below the priority they were submitted with. }
+        promoted: { type: integer, description: Waiting jobs above it. }
+        exempt: { type: integer, description: Waiting jobs exempt from cloud burst. }
+        exempt_by_priority: { type: object, additionalProperties: { type: integer } }
+        changed: { type: integer, description: Jobs moved this cycle. }
+        too_late: { type: integer, description: Jobs intent would have moved had an executor not already started them. }
 
     Run:
       type: object
@@ -917,8 +1094,18 @@ components:
         breach_expected:
           type: boolean
           description: What the autoscaler predicted. Comparing it with `breached` is the point of a run.
+        breaches_exempt_only:
+          type: boolean
+          description: Every breach the autoscaler predicted was of work exempt from cloud burst — accepted rather than missed.
+        intent:
+          oneOf: [{ $ref: "#/components/schemas/CycleIntent" }, { type: "null" }]
+          description: Null for a cycle recorded before intent was, or a live run.
         completed: { type: integer }
-        breached: { type: integer }
+        breached:
+          type: integer
+          description: |
+            Jobs that breached this interval: those still waiting past their
+            deadline, and those an executor picked up past it.
 
     Metrics:
       type: object
@@ -930,7 +1117,13 @@ components:
         run_id: { type: string }
         jobs_submitted: { type: integer }
         jobs_completed: { type: integer }
-        sla_breaches: { type: integer }
+        sla_breaches:
+          type: integer
+          description: Jobs whose wait exceeded the deadline of the level they were served at, measured from their deadline origin.
+        sla_breaches_as_submitted:
+          type: integer
+          description: Jobs whose wait exceeded the deadline of the level they were submitted at, from submission — what decay cost against the SLA work arrived under.
+        jobs_reprioritised: { type: integer, description: Jobs intent actually moved at least once. }
         breach_rate: { type: number }
         mean_wait_seconds: { type: number }
         p95_wait_seconds: { type: number }

@@ -52,6 +52,12 @@ type Provenance struct {
 	// and SettingsVersion the version they were at.
 	Settings        json.RawMessage `json:"settings,omitempty"`
 	SettingsVersion int64           `json:"settings_version,omitempty"`
+
+	// Intent is how the mine was to reorder its work, as the run began. Nil
+	// for a run recorded before intent existed, which reordered nothing.
+	// Changes made while it ran are recorded as they take effect, and
+	// replaying them is part of reproducing it.
+	Intent *RunIntent `json:"intent,omitempty"`
 }
 
 // NotReproducible is every reason a run cannot be rebuilt and replayed from

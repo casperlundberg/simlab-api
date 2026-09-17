@@ -30,6 +30,12 @@ type runRequest struct {
 	// is how one scenario is replayed under different policies, which is the
 	// comparison the whole app exists to make.
 	Settings json.RawMessage `json:"settings,omitempty"`
+
+	// Intent is how the mine reorders its queued work, as a patch onto the
+	// default — decay only — and IntentSchedule the changes planned for later
+	// cycles. A simulation run only: a live run's queue is not the mine's.
+	Intent         json.RawMessage     `json:"intent,omitempty"`
+	IntentSchedule []domain.IntentStep `json:"intent_schedule,omitempty"`
 }
 
 // Defaults chosen so a caller can post {"mode":"simulation","scenario_id":...}
@@ -80,6 +86,28 @@ func (s *server) createRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+
+	var runIntent *domain.RunIntent
+	switch {
+	case created.Mode == domain.ModeSimulation:
+		settings, err := domain.DefaultIntent().Patched(request.Intent)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "intent: "+err.Error())
+			return
+		}
+		runIntent = &domain.RunIntent{Settings: settings, Schedule: request.IntentSchedule}
+		if runIntent.Schedule == nil {
+			runIntent.Schedule = []domain.IntentStep{}
+		}
+		if err := runIntent.Validate(); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	case len(request.Intent) > 0 || len(request.IntentSchedule) > 0:
+		writeError(w, http.StatusBadRequest, "intent applies only to a simulation run: a live "+
+			"run observes a queue that is not the mine's to reorder")
+		return
+	}
 	if created.Mode == domain.ModeSimulation {
 		// Fail here, where the caller is looking, rather than inside a
 		// background run they will have to go and read the status of.
@@ -92,6 +120,12 @@ func (s *server) createRun(w http.ResponseWriter, r *http.Request) {
 	if err := s.Store.SaveRun(r.Context(), created, request.Settings); err != nil {
 		writeStoreError(w, err)
 		return
+	}
+	if runIntent != nil {
+		if err := s.Store.SaveRunIntent(r.Context(), created.ID, *runIntent); err != nil {
+			writeStoreError(w, err)
+			return
+		}
 	}
 
 	spec, err := s.Manager.Prepare(r.Context(), created.ID)
