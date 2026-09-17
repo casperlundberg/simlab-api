@@ -51,6 +51,11 @@ type Event struct {
 type Pick struct {
 	SensorID string        `json:"sensor_id"`
 	At       time.Duration `json:"at"`
+
+	// Magnitude is what this sensor's amplitude reads the event's magnitude
+	// as. Each station reads it differently — site effects, radiation pattern,
+	// distance correction — and an estimate averages the readings it has.
+	Magnitude float64 `json:"magnitude"`
 }
 
 // Estimate is a solved location, with what it could not explain.

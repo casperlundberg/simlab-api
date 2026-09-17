@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/casperlundberg/simlab-api/internal/domain"
+	"github.com/casperlundberg/simlab-api/internal/mineplan"
 	"github.com/casperlundberg/simlab-api/internal/seismic"
 )
 
@@ -60,6 +61,17 @@ var defaultExtent = domain.Extent{
 // than from anywhere in the mine.
 const aftershockSpread = 60.0
 
+// backgroundSpread and burstSpread are how far, as a standard deviation per
+// axis in metres, background events and a burst's own epicentre fall from the
+// workings. Mining-induced seismicity concentrates where mining changes the
+// stress; re-entry practice restricts access 50 to 100 m around an event in
+// open-stope mines (Vallejos & McKinnon 2009), which is the scale of volume a
+// mine treats as affected.
+const (
+	backgroundSpread = 40.0
+	burstSpread      = 20.0
+)
+
 // The streams a scenario's seed drives. Separate streams rather than one
 // shared generator, because each is a dial someone will turn independently:
 // jobs were generated before geometry existed and must not move because of it;
@@ -67,10 +79,32 @@ const aftershockSpread = 60.0
 // mine's sensors must not move because a different scenario was replayed on
 // it.
 const (
-	jobStream      = 0x9E3779B97F4A7C15
-	geometryStream = 0xD1B54A32D192ED03
-	noiseStream    = 0x8CB92BA72F3D8DD7
-	layoutStream   = 0xA0761D6478BD642F
+	jobStream       = 0x9E3779B97F4A7C15
+	geometryStream  = 0xD1B54A32D192ED03
+	noiseStream     = 0x8CB92BA72F3D8DD7
+	layoutStream    = 0xA0761D6478BD642F
+	magnitudeStream = 0xE7037ED1A0B428DB
+)
+
+// Magnitudes, as Nuttli mN, the scale the hazard scaling law is stated in.
+//
+// Background seismicity follows Gutenberg–Richter with b = 1 — ten times as
+// many events for each unit smaller — between the smallest a dense mine array
+// records and the largest a quiet shift produces. A burst's main shock is its
+// first event, and its aftershocks follow the same law up to a gap below it:
+// Vallejos and McKinnon found main shocks in mines exceed their largest
+// aftershock by 1.5 ± 0.6 on average.
+const (
+	gutenbergRichterB    = 1.0
+	smallestMagnitude    = -1.0
+	largestBackground    = 1.5
+	defaultMainMagnitude = 2.5
+	aftershockGap        = 1.5
+
+	// stationScatter is the standard deviation of one sensor's reading of an
+	// event's magnitude. Averaged over four readings it is ±0.15, the scatter
+	// the handbook's own magnitude relations carry.
+	stationScatter = 0.3
 )
 
 // Job is one unit of work arriving at the queue.
@@ -108,6 +142,9 @@ type Workload struct {
 	// Events are the detected events, in origin order. Each one's picks are a
 	// consecutive run of jobs.
 	Events []Event
+
+	// Entities are the people and vehicles underground, and where they go.
+	Entities []domain.Entity
 }
 
 // Event is one seismic event, and what the sensors made of it.
@@ -122,6 +159,10 @@ type Event struct {
 	// and not to the mine, so nothing that decides processing order or solves
 	// for a location may read it.
 	Truth domain.Point
+
+	// Magnitude is how large it really was, in mN. Ground truth, like Truth;
+	// the mine reads it only through each pick's own reading.
+	Magnitude float64
 
 	// Picks are the detections, first arrival first. Picks[k] is the pick that
 	// job FirstJob+k processes.
@@ -164,6 +205,8 @@ func Build(mine domain.Mine, scenario domain.Scenario) (Workload, error) {
 	random := rand.New(rand.NewPCG(uint64(scenario.Seed), jobStream))
 	geometry := rand.New(rand.NewPCG(uint64(scenario.Seed), geometryStream))
 	noise := rand.New(rand.NewPCG(uint64(scenario.Seed), noiseStream))
+	sizes := rand.New(rand.NewPCG(uint64(scenario.Seed), magnitudeStream))
+	mainShockDrawn := make([]bool, len(scenario.Bursts))
 
 	events, err := seismicEvents(mine, scenario, random)
 	if err != nil {
@@ -183,15 +226,16 @@ func Build(mine domain.Mine, scenario domain.Scenario) (Workload, error) {
 	}
 
 	layout := layoutOf(mine)
-	epicentres, err := burstEpicentres(scenario, layout.Extent, geometry)
+	epicentres, err := burstEpicentres(scenario, layout, geometry)
 	if err != nil {
 		return Workload{}, err
 	}
 
 	out := Workload{
-		Jobs:   make([]Job, 0, estimated),
-		Layout: layout,
-		Model:  Rock,
+		Jobs:     make([]Job, 0, estimated),
+		Layout:   layout,
+		Model:    Rock,
+		Entities: workforce(layout, scenario),
 	}
 	for _, at := range events {
 		picks := 0
@@ -209,15 +253,20 @@ func Build(mine domain.Mine, scenario domain.Scenario) (Workload, error) {
 		// geometry only decides which sensors those are — the nearest — and
 		// draws from streams of its own, so no job moves.
 		source := sourceOf(mine, scenario, at, geometry)
-		truth := placeEvent(source, epicentres, layout.Extent, geometry)
+		truth := placeEvent(source, epicentres, layout, geometry)
 		detecting := nearest(layout.Sensors, truth, picks)
 
+		magnitude := magnitudeOf(source, scenario, mainShockDrawn, sizes)
 		event := Event{
-			Origin:   at,
-			Burst:    source,
-			Truth:    truth,
-			Picks:    Rock.Picks(seismic.Event{At: truth, Origin: at}, detecting, scenario.PickJitter, noise),
-			FirstJob: domain.JobID(len(out.Jobs)),
+			Origin:    at,
+			Burst:     source,
+			Truth:     truth,
+			Magnitude: magnitude,
+			Picks:     Rock.Picks(seismic.Event{At: truth, Origin: at}, detecting, scenario.PickJitter, noise),
+			FirstJob:  domain.JobID(len(out.Jobs)),
+		}
+		for k := range event.Picks {
+			event.Picks[k].Magnitude = magnitude + sizes.NormFloat64()*stationScatter
 		}
 		index := len(out.Events)
 		out.Events = append(out.Events, event)
@@ -246,18 +295,25 @@ func Build(mine domain.Mine, scenario domain.Scenario) (Workload, error) {
 	return out, nil
 }
 
-// layoutOf is the mine's stated array, or one derived from its id.
+// layoutOf is the mine's stated layout, or one derived from its id: a plan of
+// tunnels, and the sensors installed in them.
 //
-// From the id rather than the scenario's seed, because sensors do not move
-// between scenarios: two scenarios on one mine that placed its array
-// differently would be comparing two mines.
+// From the id rather than the scenario's seed, because neither the tunnels nor
+// the sensors move between scenarios: two scenarios on one mine that drew
+// them differently would be comparing two mines.
 func layoutOf(mine domain.Mine) domain.Layout {
 	if mine.Layout != nil {
 		return *mine.Layout
 	}
 	hash := fnv.New64a()
 	_, _ = hash.Write([]byte(mine.ID))
-	return seismic.Layout(defaultExtent, mine.Sensors, rand.New(rand.NewPCG(hash.Sum64(), layoutStream)))
+	random := rand.New(rand.NewPCG(hash.Sum64(), layoutStream))
+	tunnels := mineplan.Tunnels(defaultExtent, random)
+	return domain.Layout{
+		Extent:  defaultExtent,
+		Sensors: mineplan.Sensors(tunnels, mine.Sensors, random),
+		Tunnels: tunnels,
+	}
 }
 
 // CheckGeometry refuses a scenario whose bursts are stated to happen outside
@@ -290,10 +346,11 @@ func epicentreProblem(i int, burst domain.Burst, extent domain.Extent) error {
 //
 // A candidate is drawn for every burst whether or not one is stated, so that
 // stating the epicentre of one burst moves that burst and nothing else.
-func burstEpicentres(scenario domain.Scenario, extent domain.Extent, random *rand.Rand) ([]domain.Point, error) {
+func burstEpicentres(scenario domain.Scenario, layout domain.Layout, random *rand.Rand) ([]domain.Point, error) {
+	extent := layout.Extent
 	out := make([]domain.Point, len(scenario.Bursts))
 	for i, burst := range scenario.Bursts {
-		out[i] = uniformIn(extent, random)
+		out[i] = mineplan.NearWorkings(layout.Tunnels, extent, burstSpread, random)
 		if burst.Epicentre == nil {
 			continue
 		}
@@ -340,10 +397,39 @@ func sourceOf(mine domain.Mine, scenario domain.Scenario, at time.Duration, rand
 	return nil
 }
 
-// placeEvent is where in the rock an event happened.
-func placeEvent(source *int, epicentres []domain.Point, extent domain.Extent, random *rand.Rand) domain.Point {
+// magnitudeOf is how large an event is: the burst's main shock for the first
+// event a burst produces, and a Gutenberg–Richter draw otherwise.
+func magnitudeOf(source *int, scenario domain.Scenario, mainShockDrawn []bool, random *rand.Rand) float64 {
 	if source == nil {
-		return uniformIn(extent, random)
+		return gutenbergRichter(smallestMagnitude, largestBackground, random)
+	}
+	main := defaultMainMagnitude
+	if stated := scenario.Bursts[*source].MainMagnitude; stated != nil {
+		main = *stated
+	}
+	if !mainShockDrawn[*source] {
+		mainShockDrawn[*source] = true
+		return main
+	}
+	return gutenbergRichter(smallestMagnitude, main-aftershockGap, random)
+}
+
+// gutenbergRichter draws a magnitude between low and high with b-value
+// gutenbergRichterB, by inverting the truncated distribution.
+func gutenbergRichter(low, high float64, random *rand.Rand) float64 {
+	if high <= low {
+		return low
+	}
+	span := 1 - math.Pow(10, -gutenbergRichterB*(high-low))
+	return low - math.Log10(1-random.Float64()*span)/gutenbergRichterB
+}
+
+// placeEvent is where in the rock an event happened: around its burst's
+// epicentre, or for background activity somewhere around the workings.
+func placeEvent(source *int, epicentres []domain.Point, layout domain.Layout, random *rand.Rand) domain.Point {
+	extent := layout.Extent
+	if source == nil {
+		return mineplan.NearWorkings(layout.Tunnels, extent, backgroundSpread, random)
 	}
 	centre := epicentres[*source]
 	return extent.Clamp(domain.Point{
@@ -351,15 +437,6 @@ func placeEvent(source *int, epicentres []domain.Point, extent domain.Extent, ra
 		Y: centre.Y + random.NormFloat64()*aftershockSpread,
 		Z: centre.Z + random.NormFloat64()*aftershockSpread,
 	})
-}
-
-func uniformIn(extent domain.Extent, random *rand.Rand) domain.Point {
-	spanX, spanY, spanZ := extent.Span()
-	return domain.Point{
-		X: extent.Min.X + random.Float64()*spanX,
-		Y: extent.Min.Y + random.Float64()*spanY,
-		Z: extent.Min.Z + random.Float64()*spanZ,
-	}
 }
 
 // nearest is the count sensors closest to a point, closest first. Ties go to

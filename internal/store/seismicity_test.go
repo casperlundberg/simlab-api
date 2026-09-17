@@ -83,12 +83,14 @@ func TestEveryFieldOfAScenarioSurvivesTheDatabase(t *testing.T) {
 		t.Fatalf("SaveMine() = %v", err)
 	}
 
+	mainMagnitude := 2.8
 	saved := scenario()
 	saved.PickJitter = 2500 * time.Microsecond
+	saved.Workforce = &domain.Workforce{People: 3, CrewedVehicles: 2, AutonomousVehicles: 1}
 	saved.Description = "with geometry"
 	saved.Bursts = []domain.Burst{
 		{At: time.Hour, Magnitude: 40, AftershockDecay: 3 * time.Hour,
-			Epicentre: &domain.Point{X: 410.5, Y: 220, Z: -615.25}},
+			Epicentre: &domain.Point{X: 410.5, Y: 220, Z: -615.25}, MainMagnitude: &mainMagnitude},
 		{At: 2 * time.Hour, Magnitude: 5},
 	}
 	if err := s.SaveScenario(ctx, saved); err != nil {
@@ -140,17 +142,25 @@ func TestLayoutOfARunThatDoesNotExistIsNotFound(t *testing.T) {
 func locatedEvent() domain.SeismicEvent {
 	burst := 1
 	locatedAt, processedAt := 95500*time.Millisecond, 140*time.Second
+	magnitude, estimated, final := 2.4, 2.25, 2.37
 	return domain.SeismicEvent{
 		RunID: "run-1", Sequence: 1, Origin: 80250 * time.Millisecond, Burst: &burst,
 		Truth:     domain.Point{X: 800.5, Y: 500, Z: -900},
+		Magnitude: &magnitude,
+		Exposed:   []domain.Exposure{{Entity: "person-02", Level: "high", PPV: 0.31, Distance: 48.5}},
 		Sensors:   []string{"s02", "s01"},
 		LocatedAt: &locatedAt,
 		Located: &domain.Location{
 			At: domain.Point{X: 790, Y: 510.5, Z: -905}, RMSResidualSeconds: 0.0021, Picks: 4,
+			Magnitude: &estimated, Zones: map[string]float64{"moderate": 900, "high": 140},
+			Exposed: []domain.Exposure{{Entity: "person-02", Level: "moderate", PPV: 0.05, Distance: 60}},
 		},
-		ProcessedAt: &processedAt,
+		ProcessedAt:     &processedAt,
+		PickProcessedAt: []*time.Duration{&locatedAt, nil},
 		Final: &domain.Location{
 			At: domain.Point{X: 801, Y: 499, Z: -899.5}, RMSResidualSeconds: 0.0008, Picks: 9,
+			Magnitude: &final, Zones: map[string]float64{"moderate": 950},
+			Exposed: []domain.Exposure{},
 		},
 	}
 }
@@ -266,5 +276,51 @@ func TestDeletingARunTakesItsMineWithIt(t *testing.T) {
 	}
 	if len(events) != 0 {
 		t.Errorf("a new run with a deleted run's id inherited %d of its events", len(events))
+	}
+}
+
+func TestAScenarioThatStatesNoWorkforceComesBackWithoutOne(t *testing.T) {
+	s := open(t)
+	ctx := context.Background()
+	seed(t, s)
+
+	read, err := s.Scenario(ctx, scenario().ID)
+	if err != nil {
+		t.Fatalf("Scenario() = %v", err)
+	}
+	if read.Workforce != nil {
+		t.Errorf("Workforce = %+v; unstated should stay unstated, so the default applies", read.Workforce)
+	}
+}
+
+func TestARunKeepsThePeopleAndVehiclesItWasReplayedWith(t *testing.T) {
+	s := open(t)
+	ctx := context.Background()
+	seed(t, s)
+	if err := s.SaveRun(ctx, simulationRun(), nil); err != nil {
+		t.Fatalf("SaveRun() = %v", err)
+	}
+
+	saved := []domain.Entity{
+		{ID: "person-01", Kind: domain.EntityPerson, Track: []domain.Waypoint{
+			{At: 0, Point: domain.Point{X: 1.5, Y: 2, Z: -450}},
+			{At: 90500 * time.Millisecond, Point: domain.Point{X: 91.5, Y: 2, Z: -450}},
+		}},
+		{ID: "autonomous-vehicle-01", Kind: domain.EntityAutonomousVehicle, Track: []domain.Waypoint{
+			{At: 0, Point: domain.Point{X: 160, Y: 300, Z: -1350}},
+		}},
+	}
+	if err := s.SaveEntities(ctx, "run-1", saved); err != nil {
+		t.Fatalf("SaveEntities() = %v", err)
+	}
+
+	read, err := s.Entities(ctx, "run-1")
+	if err != nil {
+		t.Fatalf("Entities() = %v", err)
+	}
+	// Ordered by id, which is how they come back.
+	want := []domain.Entity{saved[1], saved[0]}
+	if !reflect.DeepEqual(read, want) {
+		t.Errorf("entities changed in the database\n saved: %+v\n  read: %+v", want, read)
 	}
 }

@@ -1,12 +1,14 @@
 package workload_test
 
 import (
+	"math"
 	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/casperlundberg/simlab-api/internal/domain"
+	"github.com/casperlundberg/simlab-api/internal/hazard"
 	"github.com/casperlundberg/simlab-api/internal/seismic"
 	"github.com/casperlundberg/simlab-api/internal/workload"
 )
@@ -77,8 +79,8 @@ func TestAnEventIsLocatedWhenItsFourthPickIsProcessed(t *testing.T) {
 	i := eventWith(t, w, 8)
 	catalogue := workload.NewCatalogue(w)
 
-	if changed := observe(t, catalogue, 30*time.Second, jobsOf(w.Events[i], 0, 3)); len(changed) != 0 {
-		t.Fatalf("three picks changed %d events; nothing can be located from three", len(changed))
+	if changed := observe(t, catalogue, 30*time.Second, jobsOf(w.Events[i], 0, 3)); len(changed) != 1 || changed[0].LocatedAt != nil {
+		t.Fatalf("three picks should record three processed picks and no location, changed %+v", changed)
 	}
 
 	changed := observe(t, catalogue, 45*time.Second, jobsOf(w.Events[i], 3, 4))
@@ -119,8 +121,8 @@ func TestAnEventIsProcessedWhenEveryPickIsAndGetsItsFinalLocation(t *testing.T) 
 	catalogue := workload.NewCatalogue(w)
 
 	observe(t, catalogue, time.Minute, jobsOf(w.Events[i], 0, 5))
-	if changed := observe(t, catalogue, 2*time.Minute, jobsOf(w.Events[i], 5, all-1)); len(changed) != 0 {
-		t.Fatalf("an event one pick short of processed changed: %+v", changed)
+	if changed := observe(t, catalogue, 2*time.Minute, jobsOf(w.Events[i], 5, all-1)); len(changed) > 0 && changed[0].ProcessedAt != nil {
+		t.Fatalf("an event one pick short was marked processed: %+v", changed)
 	}
 	changed := observe(t, catalogue, 3*time.Minute, jobsOf(w.Events[i], all-1, all))
 	if len(changed) != 1 {
@@ -237,4 +239,155 @@ func TestTheMinimumIsFourPicks(t *testing.T) {
 	if seismic.MinimumPicks != 4 {
 		t.Errorf("MinimumPicks = %d; three coordinates and an origin time are four unknowns", seismic.MinimumPicks)
 	}
+}
+
+// A sensor has work waiting while its own pick is unprocessed, not while any
+// pick of any event it heard is. Recording only whole events, the view lit
+// every sensor of an event until its last pick finished, and showed more busy
+// sensors than there was work waiting on.
+func TestEachPickRecordsWhenItWasProcessed(t *testing.T) {
+	m, s := liveScenario()
+	w := build(t, m, s)
+	i := eventWith(t, w, 6)
+	catalogue := workload.NewCatalogue(w)
+
+	before := catalogue.Events()[i]
+	if len(before.PickProcessedAt) != len(before.Sensors) {
+		t.Fatalf("%d pick times for %d sensors", len(before.PickProcessedAt), len(before.Sensors))
+	}
+	for k, at := range before.PickProcessedAt {
+		if at != nil {
+			t.Fatalf("pick %d processed at %v before anything ran", k, *at)
+		}
+	}
+
+	observe(t, catalogue, time.Minute, jobsOf(w.Events[i], 1, 3))
+	changed := observe(t, catalogue, 2*time.Minute, jobsOf(w.Events[i], 4, 5))
+	if len(changed) != 1 {
+		t.Fatalf("a processed pick should update its event, changed %+v", changed)
+	}
+	got := changed[0].PickProcessedAt
+	for k, want := range map[int]time.Duration{1: time.Minute, 2: time.Minute, 4: 2 * time.Minute} {
+		if got[k] == nil || *got[k] != want {
+			t.Errorf("pick %d (sensor %s) processed at %v, want %v", k, changed[0].Sensors[k], got[k], want)
+		}
+	}
+	for _, k := range []int{0, 3, 5} {
+		if got[k] != nil {
+			t.Errorf("pick %d was never processed but reads %v", k, *got[k])
+		}
+	}
+}
+
+// Magnitude is estimated the way location is: from what the processed picks
+// read, never from the truth. Each sensor's amplitude gives its own reading,
+// with scatter, and the mine averages the ones it has.
+func TestAMagnitudeIsEstimatedFromThePicksReadingsNeverTheTruth(t *testing.T) {
+	m, s := liveScenario()
+	w := build(t, m, s)
+	i := eventWith(t, w, 10)
+	readings := 0.0
+	for _, pick := range w.Events[i].Picks[:6] {
+		readings += pick.Magnitude
+	}
+	w.Events[i].Magnitude = 9 // corrupt the truth; the estimate must not move
+
+	changed := observe(t, workload.NewCatalogue(w), time.Minute, jobsOf(w.Events[i], 0, 6))
+	if len(changed) != 1 || changed[0].Located == nil || changed[0].Located.Magnitude == nil {
+		t.Fatalf("six picks should give a located magnitude, got %+v", changed)
+	}
+	if got, want := *changed[0].Located.Magnitude, readings/6; math.Abs(got-want) > 1e-9 {
+		t.Errorf("estimated magnitude %.3f, want the mean of the six readings %.3f", got, want)
+	}
+}
+
+// More readings, less scatter: the final estimate is on average closer to the
+// truth than the first.
+func TestAMagnitudeEstimateSharpensAsPicksArrive(t *testing.T) {
+	m, s := verifyScenario()
+	w := build(t, m, s)
+	catalogue := workload.NewCatalogue(w)
+	all := make([]domain.JobID, 0, len(w.Jobs))
+	firstFour := make([]domain.JobID, 0)
+	for _, event := range w.Events {
+		for k := range event.Picks {
+			id := event.FirstJob + domain.JobID(k)
+			if k < 4 {
+				firstFour = append(firstFour, id)
+			} else {
+				all = append(all, id)
+			}
+		}
+	}
+	observe(t, catalogue, time.Minute, firstFour)
+	observe(t, catalogue, time.Hour, all)
+
+	first, final, n := 0.0, 0.0, 0
+	for _, event := range catalogue.Events() {
+		if event.Located == nil || event.Final == nil || event.Final.Picks < 12 {
+			continue
+		}
+		first += math.Abs(*event.Located.Magnitude - *event.Magnitude)
+		final += math.Abs(*event.Final.Magnitude - *event.Magnitude)
+		n++
+	}
+	if n < 50 {
+		t.Fatalf("only %d events to compare", n)
+	}
+	if final >= first {
+		t.Errorf("mean magnitude error %.3f from all picks against %.3f from four", final/float64(n), first/float64(n))
+	}
+}
+
+// Who is exposed is judged twice: by the simulator, from where an event really
+// was and how big it really was, at the moment it happened; and by the mine,
+// from its estimate, at the moment it had one. The distance between the two is
+// what the study measures.
+func TestExposureIsJudgedFromTheTruthAtTheEventAndFromTheEstimateWhenLocated(t *testing.T) {
+	m, s := liveScenario()
+	w := build(t, m, s)
+
+	// Put a person right on the burst's main shock for the whole run.
+	main := -1
+	for i, event := range w.Events {
+		if event.Burst != nil {
+			main = i
+			break
+		}
+	}
+	if main < 0 {
+		t.Fatal("no burst event")
+	}
+	truth := w.Events[main].Truth
+	w.Entities = []domain.Entity{{ID: "person-99", Kind: domain.EntityPerson,
+		Track: []domain.Waypoint{{At: 0, Point: truth}}}}
+
+	catalogue := workload.NewCatalogue(w)
+	event := catalogue.Events()[main]
+	// At the hypocentre, the worst the event can do anywhere. For mN 2.5 that
+	// is high, not very high: the design law holds ground motion at its value
+	// at the near-field limit, 0.87 m/s at 16 m.
+	worst := hazard.Default.LevelAt(*event.Magnitude, 0, 0).String()
+	if !exposed(event.Exposed, "person-99", worst) {
+		t.Errorf("a person at the true hypocentre of mN %.1f is not %s exposed by the truth: %+v",
+			*event.Magnitude, worst, event.Exposed)
+	}
+
+	changed := observe(t, catalogue, 10*time.Minute, jobsOf(w.Events[main], 0, len(w.Events[main].Picks)))
+	located := changed[0].Located
+	if located == nil || len(located.Zones) == 0 {
+		t.Fatalf("a located event has no zones: %+v", located)
+	}
+	if !exposed(located.Exposed, "person-99", "") {
+		t.Errorf("a person on the event is not exposed by the mine's own estimate: %+v", located.Exposed)
+	}
+}
+
+func exposed(list []domain.Exposure, entity, level string) bool {
+	for _, e := range list {
+		if e.Entity == entity && (level == "" || e.Level == level) {
+			return true
+		}
+	}
+	return false
 }

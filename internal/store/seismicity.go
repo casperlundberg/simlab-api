@@ -82,17 +82,29 @@ func (s *Store) SaveSeismicEvents(ctx context.Context, runID string, events []do
 			if err != nil {
 				return fmt.Errorf("encoding the final location of event %d of run %q: %w", event.Sequence, runID, err)
 			}
+			var exposed any
+			if event.Exposed != nil {
+				encoded, err := json.Marshal(event.Exposed)
+				if err != nil {
+					return fmt.Errorf("encoding who event %d of run %q exposed: %w", event.Sequence, runID, err)
+				}
+				exposed = encoded
+			}
 			batch.Queue(`
 				INSERT INTO run_seismic_events (run_id, sequence, origin_ms, burst, truth, sensors,
-					located_at_ms, located, processed_at_ms, final)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+					located_at_ms, located, processed_at_ms, final, picks_processed_at_ms,
+					magnitude, exposed)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 				ON CONFLICT (run_id, sequence) DO UPDATE SET
 					origin_ms = EXCLUDED.origin_ms, burst = EXCLUDED.burst,
 					truth = EXCLUDED.truth, sensors = EXCLUDED.sensors,
 					located_at_ms = EXCLUDED.located_at_ms, located = EXCLUDED.located,
-					processed_at_ms = EXCLUDED.processed_at_ms, final = EXCLUDED.final`,
+					processed_at_ms = EXCLUDED.processed_at_ms, final = EXCLUDED.final,
+					picks_processed_at_ms = EXCLUDED.picks_processed_at_ms,
+					magnitude = EXCLUDED.magnitude, exposed = EXCLUDED.exposed`,
 				runID, event.Sequence, event.Origin.Milliseconds(), event.Burst, truth, sensors,
-				nullableMs(event.LocatedAt), located, nullableMs(event.ProcessedAt), final)
+				nullableMs(event.LocatedAt), located, nullableMs(event.ProcessedAt), final,
+				pickTimes(event.PickProcessedAt), event.Magnitude, exposed)
 		}
 
 		if err := s.pool.SendBatch(ctx, batch).Close(); err != nil {
@@ -110,7 +122,8 @@ func (s *Store) SeismicEvents(ctx context.Context, runID string, from, limit int
 
 	rows, err := s.pool.Query(ctx, `
 		SELECT run_id, sequence, origin_ms, burst, truth, sensors,
-			located_at_ms, located, processed_at_ms, final
+			located_at_ms, located, processed_at_ms, final, picks_processed_at_ms,
+			magnitude, exposed
 		FROM run_seismic_events
 		WHERE run_id = $1 AND sequence > $2
 		ORDER BY sequence
@@ -128,17 +141,31 @@ func (s *Store) SeismicEvents(ctx context.Context, runID string, from, limit int
 			truth               []byte
 			locatedAt, finished *int64
 			located, final      []byte
+			picks               []*int64
+			exposed             []byte
 		)
 		if err := rows.Scan(&event.RunID, &event.Sequence, &originMs, &event.Burst, &truth,
-			&event.Sensors, &locatedAt, &located, &finished, &final); err != nil {
+			&event.Sensors, &locatedAt, &located, &finished, &final, &picks,
+			&event.Magnitude, &exposed); err != nil {
 			return nil, fmt.Errorf("reading a seismic event of run %q: %w", runID, err)
 		}
 
 		event.Origin = time.Duration(originMs) * time.Millisecond
 		event.LocatedAt = durationFromMs(locatedAt)
 		event.ProcessedAt = durationFromMs(finished)
+		if picks != nil {
+			event.PickProcessedAt = make([]*time.Duration, len(picks))
+			for i, ms := range picks {
+				event.PickProcessedAt[i] = durationFromMs(ms)
+			}
+		}
 		if err := json.Unmarshal(truth, &event.Truth); err != nil {
 			return nil, fmt.Errorf("reading where event %d of run %q was: %w", event.Sequence, runID, err)
+		}
+		if exposed != nil {
+			if err := json.Unmarshal(exposed, &event.Exposed); err != nil {
+				return nil, fmt.Errorf("reading who event %d exposed: %w", event.Sequence, err)
+			}
 		}
 		if event.Located, err = locationFrom(located); err != nil {
 			return nil, fmt.Errorf("reading the first location of event %d: %w", event.Sequence, err)
@@ -156,6 +183,22 @@ func nullableMs(d *time.Duration) any {
 		return nil
 	}
 	return d.Milliseconds()
+}
+
+// pickTimes is a list of optional times as a BIGINT[] with NULL elements, or
+// SQL NULL for a list that was never recorded.
+func pickTimes(times []*time.Duration) any {
+	if times == nil {
+		return nil
+	}
+	out := make([]*int64, len(times))
+	for i, at := range times {
+		if at != nil {
+			ms := at.Milliseconds()
+			out[i] = &ms
+		}
+	}
+	return out
 }
 
 func durationFromMs(ms *int64) *time.Duration {
@@ -184,4 +227,57 @@ func locationFrom(encoded []byte) (*domain.Location, error) {
 		return nil, err
 	}
 	return location, nil
+}
+
+// SaveEntities records the people and vehicles a run was replayed with,
+// replacing any recorded for it before.
+func (s *Store) SaveEntities(ctx context.Context, runID string, entities []domain.Entity) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("saving the entities of run %q: %w", runID, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `DELETE FROM run_entities WHERE run_id = $1`, runID); err != nil {
+		return fmt.Errorf("clearing the entities of run %q: %w", runID, err)
+	}
+	batch := &pgx.Batch{}
+	for _, entity := range entities {
+		track, err := json.Marshal(entity.Track)
+		if err != nil {
+			return fmt.Errorf("encoding the track of %s: %w", entity.ID, err)
+		}
+		batch.Queue(`INSERT INTO run_entities (run_id, id, kind, track) VALUES ($1, $2, $3, $4)`,
+			runID, entity.ID, entity.Kind, track)
+	}
+	if err := tx.SendBatch(ctx, batch).Close(); err != nil {
+		return fmt.Errorf("saving the entities of run %q: %w", runID, err)
+	}
+	return tx.Commit(ctx)
+}
+
+// Entities is the people and vehicles a run was replayed with, by id.
+func (s *Store) Entities(ctx context.Context, runID string) ([]domain.Entity, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, kind, track FROM run_entities WHERE run_id = $1 ORDER BY id`, runID)
+	if err != nil {
+		return nil, fmt.Errorf("reading the entities of run %q: %w", runID, err)
+	}
+	defer rows.Close()
+
+	entities := []domain.Entity{}
+	for rows.Next() {
+		var (
+			entity domain.Entity
+			track  []byte
+		)
+		if err := rows.Scan(&entity.ID, &entity.Kind, &track); err != nil {
+			return nil, fmt.Errorf("reading an entity of run %q: %w", runID, err)
+		}
+		if err := json.Unmarshal(track, &entity.Track); err != nil {
+			return nil, fmt.Errorf("reading the track of %s: %w", entity.ID, err)
+		}
+		entities = append(entities, entity)
+	}
+	return entities, rows.Err()
 }

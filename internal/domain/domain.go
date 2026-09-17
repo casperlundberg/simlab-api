@@ -113,6 +113,11 @@ type Burst struct {
 	// that decides processing order may read this, or the result would be
 	// assuming what it set out to show.
 	Epicentre *Point `json:"epicentre,omitempty"`
+
+	// MainMagnitude is the Nuttli magnitude of the burst's main shock, the
+	// first event it produces. Optional: unset takes a default. Unrelated to
+	// Magnitude, which is how much the burst raises the event rate.
+	MainMagnitude *float64 `json:"main_magnitude,omitempty"`
 }
 
 // Scenario is a workload to replay: a shape, a duration, and a seed.
@@ -144,6 +149,10 @@ type Scenario struct {
 	// Zero gives exact picks, which is a useful upper bound and not a
 	// realistic instrument.
 	PickJitter time.Duration `json:"pick_jitter"`
+
+	// Workforce is who and what is underground. Optional: nil takes the
+	// default workforce, and a stated one of zeroes means nobody.
+	Workforce *Workforce `json:"workforce,omitempty"`
 
 	// Seed makes a scenario reproducible. Two runs of the same scenario
 	// replay exactly the same jobs, which is what makes comparing two
@@ -180,6 +189,9 @@ func (s Scenario) Validate() error {
 			break
 		}
 		total += weight
+	}
+	if s.Workforce != nil {
+		problems = append(problems, s.Workforce.problems()...)
 	}
 	if s.PickJitter < 0 {
 		problems = append(problems, fmt.Sprintf("pick_jitter_seconds must be >= 0, got %v",

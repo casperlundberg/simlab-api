@@ -229,6 +229,19 @@ func (s *server) runSeismicity(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"events": events, "next": next})
 }
 
+// runEntities is the people and vehicles a run's mine was replayed with.
+//
+// Not paged: a day of a whole workforce's movement is a few megabytes at
+// most, and a view needs all of it to move anyone at all.
+func (s *server) runEntities(w http.ResponseWriter, r *http.Request) {
+	entities, err := s.Store.Entities(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"entities": entities})
+}
+
 // checkGeometry refuses a scenario whose bursts happen outside its mine.
 //
 // The run would refuse it too, but only once started, as a failed run somebody

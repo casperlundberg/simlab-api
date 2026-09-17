@@ -140,6 +140,7 @@ var routes = []route{
 	{http.MethodGet, "/api/runs/{id}/metrics", false, func(s *server) http.HandlerFunc { return s.runMetrics }},
 	{http.MethodGet, "/api/runs/{id}/layout", false, func(s *server) http.HandlerFunc { return s.runLayout }},
 	{http.MethodGet, "/api/runs/{id}/seismicity", false, func(s *server) http.HandlerFunc { return s.runSeismicity }},
+	{http.MethodGet, "/api/runs/{id}/entities", false, func(s *server) http.HandlerFunc { return s.runEntities }},
 	{http.MethodGet, "/api/runs/{id}/events", false, func(s *server) http.HandlerFunc { return s.runEvents }},
 	{http.MethodGet, "/api/events", false, func(s *server) http.HandlerFunc { return s.allEvents }},
 

@@ -55,6 +55,10 @@ type Recorder interface {
 	// earlier record of the same events: all of them before the run starts,
 	// then each one again as it is located and processed.
 	SaveSeismicEvents(ctx context.Context, runID string, events []domain.SeismicEvent) error
+
+	// SaveEntities records the people and vehicles underground, and where
+	// they go.
+	SaveEntities(ctx context.Context, runID string, entities []domain.Entity) error
 }
 
 // Publisher is how a run in flight reaches whoever is watching it.
@@ -184,6 +188,9 @@ func (e *Engine) simulate(ctx context.Context, spec Spec) (domain.Metrics, error
 		return domain.Metrics{}, err
 	}
 	if err := e.recorder.SaveSeismicEvents(ctx, spec.Run.ID, catalogue.Events()); err != nil {
+		return domain.Metrics{}, err
+	}
+	if err := e.recorder.SaveEntities(ctx, spec.Run.ID, generated.Entities); err != nil {
 		return domain.Metrics{}, err
 	}
 

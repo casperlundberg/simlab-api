@@ -2,11 +2,20 @@ package workload
 
 import (
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/casperlundberg/simlab-api/internal/domain"
+	"github.com/casperlundberg/simlab-api/internal/hazard"
 	"github.com/casperlundberg/simlab-api/internal/seismic"
 )
+
+// locationUncertainty is how far, in metres, the mine allows a location to be
+// out when judging who it threatens. Re-entry practice restricts at least 50 m
+// around an event, which Vallejos and McKinnon relate to location errors of up
+// to 50 m; a first location from four picks can be further out than that, so
+// this is a floor on caution rather than a bound on error.
+const locationUncertainty = 50.0
 
 // Catalogue is the mine keeping track of its own work: which picks have been
 // processed, and so which events it can put a location on.
@@ -37,12 +46,16 @@ func NewCatalogue(w Workload) *Catalogue {
 		for k, pick := range event.Picks {
 			sensors[k] = pick.SensorID
 		}
+		magnitude := event.Magnitude
 		events[i] = domain.SeismicEvent{
-			Sequence: i + 1,
-			Origin:   event.Origin,
-			Burst:    event.Burst,
-			Truth:    event.Truth,
-			Sensors:  sensors,
+			Sequence:        i + 1,
+			Origin:          event.Origin,
+			Burst:           event.Burst,
+			Truth:           event.Truth,
+			Magnitude:       &magnitude,
+			Exposed:         exposure(w.Entities, event.Truth, magnitude, event.Origin, 0),
+			Sensors:         sensors,
+			PickProcessedAt: make([]*time.Duration, len(event.Picks)),
 		}
 	}
 	return &Catalogue{
@@ -55,11 +68,22 @@ func NewCatalogue(w Workload) *Catalogue {
 
 // Events is every event as the mine currently knows it.
 func (c *Catalogue) Events() []domain.SeismicEvent {
-	return append([]domain.SeismicEvent(nil), c.events...)
+	out := make([]domain.SeismicEvent, len(c.events))
+	for i, event := range c.events {
+		out[i] = snapshot(event)
+	}
+	return out
 }
 
-// Observe records that jobs finished by at, and returns the events that were
-// located or fully processed as a result.
+// snapshot copies an event's record, so a caller holding it does not see the
+// catalogue's later updates to the pick times it shares.
+func snapshot(event domain.SeismicEvent) domain.SeismicEvent {
+	event.PickProcessedAt = append([]*time.Duration(nil), event.PickProcessedAt...)
+	return event
+}
+
+// Observe records that jobs finished by at, and returns every event one of
+// them was a pick of, as it now stands.
 //
 // at is the time the mine learned of it. A run reports completions once per
 // decision interval, so a location is timed to the interval in which its
@@ -81,48 +105,50 @@ func (c *Catalogue) Observe(at time.Duration, finished []domain.JobID) ([]domain
 
 		event := c.workload.Jobs[id].Event
 		c.processed[event]++
+		when := at
+		c.events[event].PickProcessedAt[int(id)-int(c.workload.Events[event].FirstJob)] = &when
 		if !seen[event] {
 			seen[event] = true
 			touched = append(touched, event)
 		}
 	}
 
+	// Every event touched has changed: at the least, a pick of it has a
+	// processed time it did not have before.
 	changed := []domain.SeismicEvent{}
 	for _, i := range touched {
 		record := &c.events[i]
 		picks := len(c.workload.Events[i].Picks)
-		moved := false
 
 		if record.LocatedAt == nil && c.processed[i] >= seismic.MinimumPicks {
-			if location, ok := c.locate(i); ok {
+			if location, ok := c.locate(i, at); ok {
 				when := at
 				record.LocatedAt, record.Located = &when, location
-				moved = true
 			}
 		}
 		if record.ProcessedAt == nil && c.processed[i] == picks {
 			when := at
 			record.ProcessedAt = &when
-			if location, ok := c.locate(i); ok {
+			if location, ok := c.locate(i, at); ok {
 				record.Final = location
 			}
-			moved = true
 		}
-		if moved {
-			changed = append(changed, *record)
-		}
+		changed = append(changed, snapshot(*record))
 	}
 	return changed, nil
 }
 
-// locate solves for event i from the picks processed so far.
-func (c *Catalogue) locate(i int) (*domain.Location, bool) {
+// locate solves for event i from the picks processed so far, and judges who
+// that location threatens at the moment it was solved.
+func (c *Catalogue) locate(i int, at time.Duration) (*domain.Location, bool) {
 	event := c.workload.Events[i]
 
 	picks := make([]seismic.Pick, 0, len(event.Picks))
+	readings := 0.0
 	for k, pick := range event.Picks {
 		if c.done[int(event.FirstJob)+k] {
 			picks = append(picks, pick)
+			readings += pick.Magnitude
 		}
 	}
 
@@ -132,9 +158,45 @@ func (c *Catalogue) locate(i int) (*domain.Location, bool) {
 		// Either way there is nothing an operator could point at.
 		return nil, false
 	}
+	magnitude := readings / float64(len(picks))
+
+	zones := map[string]float64{}
+	for level, radius := range hazard.Default.Zones(magnitude, locationUncertainty) {
+		zones[level.String()] = radius
+	}
 	return &domain.Location{
 		At:                 estimate.At,
 		RMSResidualSeconds: estimate.RMSResidualSeconds,
 		Picks:              estimate.Picks,
+		Magnitude:          &magnitude,
+		Zones:              zones,
+		Exposed:            exposure(c.workload.Entities, estimate.At, magnitude, at, locationUncertainty),
 	}, true
+}
+
+// exposure is who is within reach of an event at a moment: everyone whose
+// predicted ground motion is at least moderate, worst first.
+func exposure(entities []domain.Entity, from domain.Point, magnitude float64, at time.Duration,
+	uncertainty float64) []domain.Exposure {
+	out := []domain.Exposure{}
+	for _, entity := range entities {
+		distance := entity.PositionAt(at).DistanceTo(from)
+		level := hazard.Default.LevelAt(magnitude, distance, uncertainty)
+		if level == hazard.None {
+			continue
+		}
+		out = append(out, domain.Exposure{
+			Entity:   entity.ID,
+			Level:    level.String(),
+			PPV:      hazard.Default.PPV(magnitude, max(0, distance-uncertainty)),
+			Distance: distance,
+		})
+	}
+	sort.SliceStable(out, func(a, b int) bool {
+		if out[a].PPV != out[b].PPV {
+			return out[a].PPV > out[b].PPV
+		}
+		return out[a].Entity < out[b].Entity
+	})
+	return out
 }

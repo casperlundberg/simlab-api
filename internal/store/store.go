@@ -157,19 +157,28 @@ func (s *Store) SaveScenario(ctx context.Context, scenario domain.Scenario) erro
 		return fmt.Errorf("encoding the bursts: %w", err)
 	}
 
+	var workforce any
+	if scenario.Workforce != nil {
+		encoded, err := json.Marshal(scenario.Workforce)
+		if err != nil {
+			return fmt.Errorf("encoding the workforce: %w", err)
+		}
+		workforce = encoded
+	}
+
 	_, err = s.pool.Exec(ctx, `
 		INSERT INTO scenarios (id, mine_id, name, duration_ms, job_seconds, seed,
-			priority_mix, bursts, description, pick_jitter_ms)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			priority_mix, bursts, description, pick_jitter_ms, workforce)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		ON CONFLICT (id) DO UPDATE SET
 			mine_id = EXCLUDED.mine_id, name = EXCLUDED.name,
 			duration_ms = EXCLUDED.duration_ms, job_seconds = EXCLUDED.job_seconds,
 			seed = EXCLUDED.seed, priority_mix = EXCLUDED.priority_mix,
 			bursts = EXCLUDED.bursts, description = EXCLUDED.description,
-			pick_jitter_ms = EXCLUDED.pick_jitter_ms`,
+			pick_jitter_ms = EXCLUDED.pick_jitter_ms, workforce = EXCLUDED.workforce`,
 		scenario.ID, scenario.MineID, scenario.Name, scenario.Duration.Milliseconds(),
 		scenario.JobSeconds, scenario.Seed, mix, bursts, scenario.Description,
-		float64(scenario.PickJitter)/float64(time.Millisecond))
+		float64(scenario.PickJitter)/float64(time.Millisecond), workforce)
 	if err != nil {
 		return fmt.Errorf("saving scenario %q: %w", scenario.ID, err)
 	}
@@ -180,7 +189,7 @@ func (s *Store) SaveScenario(ctx context.Context, scenario domain.Scenario) erro
 func (s *Store) Scenario(ctx context.Context, id string) (domain.Scenario, error) {
 	return s.scanScenario(s.pool.QueryRow(ctx, `
 		SELECT id, mine_id, name, duration_ms, job_seconds, seed, priority_mix,
-			bursts, description, pick_jitter_ms, created_at
+			bursts, description, pick_jitter_ms, workforce, created_at
 		FROM scenarios WHERE id = $1`, id), id)
 }
 
@@ -188,7 +197,7 @@ func (s *Store) Scenario(ctx context.Context, id string) (domain.Scenario, error
 func (s *Store) Scenarios(ctx context.Context, mineID string) ([]domain.Scenario, error) {
 	query := `
 		SELECT id, mine_id, name, duration_ms, job_seconds, seed, priority_mix,
-			bursts, description, pick_jitter_ms, created_at
+			bursts, description, pick_jitter_ms, workforce, created_at
 		FROM scenarios`
 	args := []any{}
 	if mineID != "" {
@@ -245,11 +254,18 @@ func (s *Store) scanScenarioRow(row scannable) (domain.Scenario, error) {
 		mix        []byte
 		bursts     []byte
 		jitterMs   float64
+		workforce  []byte
 	)
 	if err := row.Scan(&scenario.ID, &scenario.MineID, &scenario.Name, &durationMs,
 		&scenario.JobSeconds, &scenario.Seed, &mix, &bursts,
-		&scenario.Description, &jitterMs, &scenario.CreatedAt); err != nil {
+		&scenario.Description, &jitterMs, &workforce, &scenario.CreatedAt); err != nil {
 		return domain.Scenario{}, err
+	}
+	if workforce != nil {
+		scenario.Workforce = &domain.Workforce{}
+		if err := json.Unmarshal(workforce, scenario.Workforce); err != nil {
+			return domain.Scenario{}, fmt.Errorf("reading the workforce of %q: %w", scenario.ID, err)
+		}
 	}
 
 	scenario.Duration = time.Duration(durationMs) * time.Millisecond
@@ -279,6 +295,7 @@ func (s *Store) scanScenarioRow(row scannable) (domain.Scenario, error) {
 			Magnitude:       burst.Magnitude,
 			AftershockDecay: time.Duration(burst.DecayMs) * time.Millisecond,
 			Epicentre:       burst.Epicentre,
+			MainMagnitude:   burst.MainMagnitude,
 		})
 	}
 	return scenario, nil
@@ -292,17 +309,19 @@ type burstWire struct {
 	Magnitude float64 `json:"magnitude"`
 	DecayMs   int64   `json:"aftershock_decay_ms"`
 
-	Epicentre *domain.Point `json:"epicentre,omitempty"`
+	Epicentre     *domain.Point `json:"epicentre,omitempty"`
+	MainMagnitude *float64      `json:"main_magnitude,omitempty"`
 }
 
 func burstsToWire(bursts []domain.Burst) []burstWire {
 	out := make([]burstWire, 0, len(bursts))
 	for _, burst := range bursts {
 		out = append(out, burstWire{
-			AtMs:      burst.At.Milliseconds(),
-			Magnitude: burst.Magnitude,
-			DecayMs:   burst.AftershockDecay.Milliseconds(),
-			Epicentre: burst.Epicentre,
+			AtMs:          burst.At.Milliseconds(),
+			Magnitude:     burst.Magnitude,
+			DecayMs:       burst.AftershockDecay.Milliseconds(),
+			Epicentre:     burst.Epicentre,
+			MainMagnitude: burst.MainMagnitude,
 		})
 	}
 	return out

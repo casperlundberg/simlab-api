@@ -334,6 +334,24 @@ paths:
                   events: { type: array, items: { $ref: "#/components/schemas/SeismicEvent" } }
                   next: { type: integer }
 
+  /api/runs/{id}/entities:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    get:
+      tags: [runs]
+      summary: The people and vehicles underground during a run, and where they went
+      description: |
+        Recorded as the run starts. Not paged: a day of a whole workforce's
+        movement is a few megabytes, and a view needs all of it to move anyone.
+      responses:
+        "200":
+          description: Entities, by id.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entities: { type: array, items: { $ref: "#/components/schemas/Entity" } }
+
   /api/runs/{id}/events:
     parameters: [{ $ref: "#/components/parameters/ID" }]
     get:
@@ -544,6 +562,43 @@ components:
             properties:
               id: { type: string }
               at: { $ref: "#/components/schemas/Point" }
+        tunnels:
+          type: array
+          description: |
+            The excavations. Optional on a stated layout; a derived one always
+            has them, with its sensors installed in them. Tunnels join where
+            they share a vertex exactly.
+          items: { $ref: "#/components/schemas/Tunnel" }
+
+    Tunnel:
+      type: object
+      properties:
+        id: { type: string, example: L600-crosscut-2 }
+        kind: { type: string, description: "shaft, ramp, drive, crosscut, ore-drive or access" }
+        path: { type: array, minItems: 2, items: { $ref: "#/components/schemas/Point" } }
+
+    Entity:
+      type: object
+      properties:
+        id: { type: string, example: person-03 }
+        kind: { type: string, enum: [person, crewed-vehicle, autonomous-vehicle] }
+        track:
+          type: array
+          description: |
+            Waypoints as [seconds, x, y, z], in time order. Between two, the
+            entity moves in a straight line at constant speed; two in a row at
+            one position are a stop. Outside the track it holds its first or
+            last position.
+          items: { type: array, items: { type: number }, minItems: 4, maxItems: 4 }
+
+    Exposure:
+      type: object
+      description: One person or vehicle within reach of an event.
+      properties:
+        entity: { type: string }
+        level: { type: string, enum: [moderate, high, very-high] }
+        ppv_mps: { type: number, description: Predicted peak particle velocity where they were. }
+        distance_m: { type: number }
 
     Location:
       type: object
@@ -554,6 +609,23 @@ components:
           type: number
           description: The arrival-time error the solution could not explain — how far to trust it.
         picks: { type: integer, description: How many detections it was solved from. }
+        magnitude:
+          type: [number, "null"]
+          description: The mine's estimate (Nuttli mN), the mean of the same picks' amplitude readings.
+        zones:
+          type: object
+          additionalProperties: { type: number }
+          description: |
+            For each level of ground motion the event can reach (moderate, high,
+            very-high), how far from this location it extends, in metres,
+            widened by the 50 m the mine allows a location to be out. From the
+            Canadian Rockburst Support Handbook's design scaling law,
+            ppv = C*·√(10^(mN+1))/R with C* = 0.25 m²/s, held at its value at
+            the near-field limit.
+        exposed:
+          type: array
+          items: { $ref: "#/components/schemas/Exposure" }
+          description: Who the mine judged exposed from this location, where they were when it had it.
 
     SeismicEvent:
       type: object
@@ -564,6 +636,13 @@ components:
         burst:
           type: [integer, "null"]
           description: The index of the scenario burst it belongs to; null for background activity.
+        magnitude:
+          type: [number, "null"]
+          description: How large it really was (Nuttli mN). Ground truth, like `truth`.
+        exposed:
+          type: [array, "null"]
+          items: { $ref: "#/components/schemas/Exposure" }
+          description: Who it really exposed, where they were when it happened. The simulator's answer.
         truth:
           $ref: "#/components/schemas/Point"
           description: |
@@ -586,6 +665,13 @@ components:
         final:
           oneOf: [{ $ref: "#/components/schemas/Location" }, { type: "null" }]
           description: The location solved from every pick. Null for an event too few sensors saw.
+        picks_processed_at_seconds:
+          type: [array, "null"]
+          items: { type: [number, "null"] }
+          description: |
+            When each pick was processed, in the order of `sensors`; null for
+            one still waiting. Null as a whole for an event recorded before this
+            was tracked.
 
     Burst:
       type: object
@@ -613,6 +699,12 @@ components:
             Where in the rock it happens; its aftershocks cluster around it.
             Optional, and drawn from the seed when absent. Must lie inside the
             mine, or the scenario is refused when saved.
+        main_magnitude:
+          type: number
+          description: |
+            The Nuttli magnitude of the burst's main shock, its first event.
+            Defaults to 2.5. Not the same as `magnitude`, which scales the
+            event rate.
       required: [at_seconds, magnitude]
 
     Scenario:
@@ -633,6 +725,16 @@ components:
             arrival is from the true one. It is the dial that sets how
             uncertain the mine's locations are, and turning it moves no event
             and no job.
+        workforce:
+          type: object
+          description: |
+            Who is underground. Omit for the default (8 people, 4 crewed and 3
+            autonomous vehicles); a stated one of zeroes means nobody. Moves no
+            event and no job.
+          properties:
+            people: { type: integer, minimum: 0 }
+            crewed_vehicles: { type: integer, minimum: 0 }
+            autonomous_vehicles: { type: integer, minimum: 0 }
         seed:
           type: integer
           format: int64

@@ -30,6 +30,15 @@ type SeismicEvent struct {
 	// Truth is where it really was. Ground truth; see the type comment.
 	Truth Point
 
+	// Magnitude is how large it really was, as a Nuttli magnitude. Ground
+	// truth, like Truth. Nil for an event recorded before magnitudes were.
+	Magnitude *float64
+
+	// Exposed is who was really exposed, and how badly: judged from Truth and
+	// Magnitude, at the moment it happened, with no uncertainty. The simulator's
+	// answer, which the mine's own is scored against.
+	Exposed []Exposure
+
 	// Sensors are the ids of the sensors that detected it, first arrival
 	// first. Each one is a pick job in the queue.
 	Sensors []string
@@ -48,6 +57,12 @@ type SeismicEvent struct {
 	// event too few sensors saw to locate.
 	ProcessedAt *time.Duration
 	Final       *Location
+
+	// PickProcessedAt is when each pick was processed, one entry per sensor
+	// in Sensors and in the same order; nil while it is still waiting. It is
+	// what says which sensors have work outstanding at a moment, which the
+	// event-level times cannot: an event's picks finish one by one.
+	PickProcessedAt []*time.Duration
 }
 
 // Location is an estimate the mine solved, and how much it should be trusted.
@@ -60,19 +75,50 @@ type Location struct {
 
 	// Picks is how many detections it was solved from.
 	Picks int `json:"picks"`
+
+	// Magnitude is the mine's estimate, from the amplitudes of the same picks.
+	// Nil for a location recorded before magnitudes were.
+	Magnitude *float64 `json:"magnitude"`
+
+	// Zones is, for each level of ground motion the event can reach, how far
+	// from this location that level extends — widened by how far the location
+	// may be out. Keyed by level: moderate, high, very-high.
+	Zones map[string]float64 `json:"zones,omitempty"`
+
+	// Exposed is who the mine judged exposed from this location, at the moment
+	// it had it.
+	Exposed []Exposure `json:"exposed"`
+}
+
+// Exposure is one person or vehicle within reach of an event.
+type Exposure struct {
+	Entity string `json:"entity"`
+
+	// Level is the band of ground motion: moderate, high or very-high.
+	Level string `json:"level"`
+
+	// PPV is the predicted peak particle velocity where they were, in m/s.
+	PPV float64 `json:"ppv_mps"`
+
+	// Distance is how far they were from the location it was judged from, in
+	// metres.
+	Distance float64 `json:"distance_m"`
 }
 
 type seismicEventWire struct {
-	RunID              string    `json:"run_id"`
-	Sequence           int       `json:"sequence"`
-	OriginSeconds      float64   `json:"origin_seconds"`
-	Burst              *int      `json:"burst"`
-	Truth              Point     `json:"truth"`
-	Sensors            []string  `json:"sensors"`
-	LocatedAtSeconds   *float64  `json:"located_at_seconds"`
-	Located            *Location `json:"located"`
-	ProcessedAtSeconds *float64  `json:"processed_at_seconds"`
-	Final              *Location `json:"final"`
+	RunID              string     `json:"run_id"`
+	Sequence           int        `json:"sequence"`
+	OriginSeconds      float64    `json:"origin_seconds"`
+	Burst              *int       `json:"burst"`
+	Truth              Point      `json:"truth"`
+	Magnitude          *float64   `json:"magnitude"`
+	Exposed            []Exposure `json:"exposed"`
+	Sensors            []string   `json:"sensors"`
+	LocatedAtSeconds   *float64   `json:"located_at_seconds"`
+	Located            *Location  `json:"located"`
+	ProcessedAtSeconds *float64   `json:"processed_at_seconds"`
+	Final              *Location  `json:"final"`
+	PicksProcessedAt   []*float64 `json:"picks_processed_at_seconds"`
 }
 
 // MarshalJSON renders an event with its times in seconds, and with the times
@@ -83,16 +129,29 @@ func (e SeismicEvent) MarshalJSON() ([]byte, error) {
 	if sensors == nil {
 		sensors = []string{}
 	}
+	// Null, not empty, for an event recorded before pick times were: every
+	// event has at least one pick, so an empty list would claim a count that
+	// is wrong rather than say nothing.
+	var picks []*float64
+	if e.PickProcessedAt != nil {
+		picks = make([]*float64, len(e.PickProcessedAt))
+		for i, at := range e.PickProcessedAt {
+			picks[i] = secondsOf(at)
+		}
+	}
 	return json.Marshal(seismicEventWire{
 		RunID: e.RunID, Sequence: e.Sequence,
 		OriginSeconds:      e.Origin.Seconds(),
 		Burst:              e.Burst,
 		Truth:              e.Truth,
+		Magnitude:          e.Magnitude,
+		Exposed:            e.Exposed,
 		Sensors:            sensors,
 		LocatedAtSeconds:   secondsOf(e.LocatedAt),
 		Located:            e.Located,
 		ProcessedAtSeconds: secondsOf(e.ProcessedAt),
 		Final:              e.Final,
+		PicksProcessedAt:   picks,
 	})
 }
 
@@ -107,11 +166,19 @@ func (e *SeismicEvent) UnmarshalJSON(data []byte) error {
 		Origin:      seconds(wire.OriginSeconds),
 		Burst:       wire.Burst,
 		Truth:       wire.Truth,
+		Magnitude:   wire.Magnitude,
+		Exposed:     wire.Exposed,
 		Sensors:     wire.Sensors,
 		LocatedAt:   durationOf(wire.LocatedAtSeconds),
 		Located:     wire.Located,
 		ProcessedAt: durationOf(wire.ProcessedAtSeconds),
 		Final:       wire.Final,
+	}
+	if wire.PicksProcessedAt != nil {
+		e.PickProcessedAt = make([]*time.Duration, len(wire.PicksProcessedAt))
+		for i, at := range wire.PicksProcessedAt {
+			e.PickProcessedAt[i] = durationOf(at)
+		}
 	}
 	return nil
 }

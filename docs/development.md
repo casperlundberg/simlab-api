@@ -53,7 +53,9 @@ workload, the difference is the settings.
 |---|---|
 | `internal/domain` | Mines, scenarios, runs, cycles, metrics. Values only. |
 | `internal/workload` | Turning a scenario into jobs and the mine they came from — sensor layout, event epicentres, picks — deterministically from its seed. Also the `Catalogue`: the mine locating events as its picks are processed. |
-| `internal/seismic` | The physics: travel times, picks, solving a location from picks, placing sensors. |
+| `internal/seismic` | The physics: travel times, picks, solving a location from picks. |
+| `internal/mineplan` | The mine's development: shaft, ramp, levels, drives and crosscuts; sensors installed in them; the tunnel network as a graph to travel. |
+| `internal/hazard` | How much an event threatens a place: the Canadian Rockburst Support Handbook's scaling law, ppv = C*·√(10^(mN+1))/R, its near-field limit, and ground-motion levels. |
 | `internal/orchestrator` | The seam in front of the queue, with the capabilities a real orchestrator declares. |
 | `internal/queue` | The job-level simulation: arrivals, service, deadlines missed. |
 | `internal/autoscaler` | The client for the autoscaler service, plus a fake to test against. |

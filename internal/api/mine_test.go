@@ -191,3 +191,22 @@ func TestACycleCarriesTheQueueBySubmittedPriority(t *testing.T) {
 		}
 	}
 }
+
+func TestTheMinesPeopleAndVehiclesCanBeReadBack(t *testing.T) {
+	f := newFixture(t)
+	runID := completedRun(t, f)
+
+	body := decodeBody(t, f.do(t, http.MethodGet, "/api/runs/"+runID+"/entities", nil))
+	entities, _ := body["entities"].([]any)
+	if len(entities) == 0 {
+		t.Fatal("a completed run has nobody underground")
+	}
+	first, _ := entities[0].(map[string]any)
+	track, _ := first["track"].([]any)
+	if len(track) < 2 {
+		t.Fatalf("%v has a track of %d waypoints", first["id"], len(track))
+	}
+	if point, _ := track[0].([]any); len(point) != 4 {
+		t.Errorf("a waypoint is %v, want [seconds, x, y, z]", track[0])
+	}
+}

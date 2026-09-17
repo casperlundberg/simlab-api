@@ -32,12 +32,21 @@ type recorder struct {
 	// upserts would hold it; seismicWrites is every write in order.
 	seismic       map[int]domain.SeismicEvent
 	seismicWrites [][]domain.SeismicEvent
+
+	entities []domain.Entity
 }
 
 func (r *recorder) SaveLayout(_ context.Context, _ string, layout domain.Layout) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.layouts = append(r.layouts, layout)
+	return nil
+}
+
+func (r *recorder) SaveEntities(_ context.Context, _ string, entities []domain.Entity) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.entities = entities
 	return nil
 }
 
@@ -508,6 +517,12 @@ func TestASimulationRunRecordsTheMineItReplayed(t *testing.T) {
 	}
 	if got := len(h.recorder.layouts[0].Sensors); got != mine().Sensors {
 		t.Errorf("the recorded array has %d sensors, the mine has %d", got, mine().Sensors)
+	}
+	if len(h.recorder.layouts[0].Tunnels) == 0 {
+		t.Error("the recorded mine has no tunnels")
+	}
+	if len(h.recorder.entities) == 0 {
+		t.Error("nobody was recorded as underground")
 	}
 	if len(h.recorder.seismicWrites) == 0 || len(h.recorder.seismicWrites[0]) == 0 {
 		t.Fatal("no seismic events were recorded before the run began")

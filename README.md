@@ -40,6 +40,14 @@ queue, and so by the autoscaler — it is the operator-facing consequence of a
 scaling decision. The location is solved from processed picks, never read from
 the simulator's ground truth, which is recorded beside it for comparison.
 
+The mine has tunnels, with its sensors installed in them and its events
+clustered around them, and a workforce — people on foot, crewed vehicles and
+autonomous haulers — moving through them. Each event carries a magnitude, and
+who it exposes is judged twice with the rockburst handbook's ground-motion
+scaling law: by the simulator, from where the event really was, and by the
+mine, from its estimate and a 50 m allowance for location error. Nothing yet
+changes a job's priority from that judgement.
+
 Because a scenario carries a seed, two runs replay exactly the same jobs. The
 difference between their results is attributable to the settings that changed
 and to nothing else — which is what makes it an experiment rather than an

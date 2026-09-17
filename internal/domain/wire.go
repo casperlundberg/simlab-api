@@ -18,10 +18,11 @@ import (
 // direction.
 
 type burstWire struct {
-	AtSeconds              float64 `json:"at_seconds"`
-	Magnitude              float64 `json:"magnitude"`
-	AftershockDecaySeconds float64 `json:"aftershock_decay_seconds,omitempty"`
-	Epicentre              *Point  `json:"epicentre,omitempty"`
+	AtSeconds              float64  `json:"at_seconds"`
+	Magnitude              float64  `json:"magnitude"`
+	AftershockDecaySeconds float64  `json:"aftershock_decay_seconds,omitempty"`
+	Epicentre              *Point   `json:"epicentre,omitempty"`
+	MainMagnitude          *float64 `json:"main_magnitude,omitempty"`
 }
 
 // MarshalJSON renders a burst with its offsets in seconds.
@@ -31,6 +32,7 @@ func (b Burst) MarshalJSON() ([]byte, error) {
 		Magnitude:              b.Magnitude,
 		AftershockDecaySeconds: b.AftershockDecay.Seconds(),
 		Epicentre:              b.Epicentre,
+		MainMagnitude:          b.MainMagnitude,
 	})
 }
 
@@ -45,6 +47,7 @@ func (b *Burst) UnmarshalJSON(data []byte) error {
 		Magnitude:       wire.Magnitude,
 		AftershockDecay: seconds(wire.AftershockDecaySeconds),
 		Epicentre:       wire.Epicentre,
+		MainMagnitude:   wire.MainMagnitude,
 	}
 	return nil
 }
@@ -56,6 +59,7 @@ type scenarioWire struct {
 	DurationSeconds float64            `json:"duration_seconds"`
 	JobSeconds      float64            `json:"job_seconds"`
 	PickJitter      float64            `json:"pick_jitter_seconds,omitempty"`
+	Workforce       *Workforce         `json:"workforce,omitempty"`
 	Seed            int64              `json:"seed"`
 	PriorityMix     map[string]float64 `json:"priority_mix"`
 	Bursts          []Burst            `json:"bursts,omitempty"`
@@ -74,6 +78,7 @@ func (s Scenario) MarshalJSON() ([]byte, error) {
 		DurationSeconds: s.Duration.Seconds(),
 		JobSeconds:      s.JobSeconds,
 		PickJitter:      s.PickJitter.Seconds(),
+		Workforce:       s.Workforce,
 		Seed:            s.Seed,
 		PriorityMix:     mix,
 		Bursts:          s.Bursts,
@@ -103,6 +108,7 @@ func (s *Scenario) UnmarshalJSON(data []byte) error {
 		Duration:    seconds(wire.DurationSeconds),
 		JobSeconds:  wire.JobSeconds,
 		PickJitter:  seconds(wire.PickJitter),
+		Workforce:   wire.Workforce,
 		Seed:        wire.Seed,
 		PriorityMix: mix,
 		Bursts:      wire.Bursts,

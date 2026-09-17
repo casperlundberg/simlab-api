@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/casperlundberg/simlab-api/internal/domain"
+	"github.com/casperlundberg/simlab-api/internal/mineplan"
 	"github.com/casperlundberg/simlab-api/internal/workload"
 )
 
@@ -301,4 +302,84 @@ func median(values []float64) float64 {
 	sorted := append([]float64(nil), values...)
 	sort.Float64s(sorted)
 	return sorted[len(sorted)/2]
+}
+
+// Seismicity in a mine happens where mining changes the stress, and a
+// derived mine has its sensors where anyone could install one.
+func TestADerivedMineHasTunnelsWithItsSensorsInThemAndItsEventsAroundThem(t *testing.T) {
+	m, s := verifyScenario()
+	w := build(t, m, s)
+
+	if len(w.Layout.Tunnels) == 0 {
+		t.Fatal("a derived mine has no tunnels")
+	}
+	for _, sensor := range w.Layout.Sensors {
+		if d := mineplan.DistanceToTunnels(w.Layout.Tunnels, sensor.At); d > 0.001 {
+			t.Fatalf("sensor %s is %.1f m into the rock", sensor.ID, d)
+		}
+	}
+
+	var distances []float64
+	for _, event := range w.Events {
+		if event.Burst == nil {
+			distances = append(distances, mineplan.DistanceToTunnels(w.Layout.Tunnels, event.Truth))
+		}
+	}
+	if len(distances) < 50 {
+		t.Fatalf("%d background events; too few to judge", len(distances))
+	}
+	if med := median(distances); med > 80 {
+		t.Errorf("background events are a median %.0f m from the nearest tunnel; they should cluster around the workings", med)
+	}
+}
+
+// Seismicity follows Gutenberg–Richter: many small events, few large ones. A
+// burst's main shock is its largest, and its aftershocks stay well below it.
+func TestMagnitudesAreManySmallAndFewLargeWithTheMainShockLargest(t *testing.T) {
+	m, s := verifyScenario()
+	w := build(t, m, s)
+
+	below, above := 0, 0
+	main := math.Inf(-1)
+	largestAftershock := math.Inf(-1)
+	sawMain := false
+	for _, event := range w.Events {
+		if event.Burst != nil {
+			if !sawMain {
+				main, sawMain = event.Magnitude, true
+				continue
+			}
+			largestAftershock = math.Max(largestAftershock, event.Magnitude)
+		}
+		if event.Magnitude < 0 {
+			below++
+		} else {
+			above++
+		}
+	}
+	if below <= 2*above {
+		t.Errorf("%d events below magnitude 0 and %d above; small events should dominate", below, above)
+	}
+	if main != 2.5 {
+		t.Errorf("the main shock is mN %.2f, want the default 2.5", main)
+	}
+	if largestAftershock > main-1 {
+		t.Errorf("the largest aftershock is mN %.2f against a main shock of %.2f", largestAftershock, main)
+	}
+}
+
+func TestAStatedMainShockMagnitudeIsUsed(t *testing.T) {
+	m, s := liveScenario()
+	magnitude := 3.2
+	s.Bursts[0].MainMagnitude = &magnitude
+
+	for _, event := range build(t, m, s).Events {
+		if event.Burst != nil {
+			if event.Magnitude != 3.2 {
+				t.Errorf("the main shock is mN %.2f, want the stated 3.2", event.Magnitude)
+			}
+			return
+		}
+	}
+	t.Fatal("no burst event")
 }

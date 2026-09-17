@@ -145,11 +145,12 @@ func TestASeismicEventCrossesTheWireInSeconds(t *testing.T) {
 	locatedAt, processedAt := 95*time.Second, 140*time.Second
 	event := domain.SeismicEvent{
 		RunID: "run-1", Sequence: 3, Origin: 80 * time.Second, Burst: &burst,
-		Truth:       domain.Point{X: 1, Y: 2, Z: -3},
-		Sensors:     []string{"s01", "s04"},
-		LocatedAt:   &locatedAt,
-		Located:     &domain.Location{At: domain.Point{X: 4, Y: 5, Z: -6}, RMSResidualSeconds: 0.002, Picks: 4},
-		ProcessedAt: &processedAt,
+		Truth:           domain.Point{X: 1, Y: 2, Z: -3},
+		Sensors:         []string{"s01", "s04"},
+		LocatedAt:       &locatedAt,
+		Located:         &domain.Location{At: domain.Point{X: 4, Y: 5, Z: -6}, RMSResidualSeconds: 0.002, Picks: 4},
+		ProcessedAt:     &processedAt,
+		PickProcessedAt: []*time.Duration{&locatedAt, nil},
 	}
 
 	encoded, err := json.Marshal(event)
@@ -158,7 +159,7 @@ func TestASeismicEventCrossesTheWireInSeconds(t *testing.T) {
 	}
 	for _, want := range []string{
 		`"origin_seconds":80`, `"located_at_seconds":95`, `"processed_at_seconds":140`,
-		`"burst":0`, `"final":null`,
+		`"burst":0`, `"final":null`, `"picks_processed_at_seconds":[95,null]`,
 	} {
 		if !strings.Contains(string(encoded), want) {
 			t.Errorf("%s is missing %s", encoded, want)
@@ -170,7 +171,8 @@ func TestASeismicEventCrossesTheWireInSeconds(t *testing.T) {
 		t.Fatalf("Unmarshal() = %v", err)
 	}
 	if back.Origin != event.Origin || *back.LocatedAt != locatedAt || *back.ProcessedAt != processedAt ||
-		*back.Burst != 0 || back.Final != nil || back.Located.Picks != 4 {
+		*back.Burst != 0 || back.Final != nil || back.Located.Picks != 4 ||
+		len(back.PickProcessedAt) != 2 || *back.PickProcessedAt[0] != locatedAt || back.PickProcessedAt[1] != nil {
 		t.Errorf("round trip = %+v, want %+v", back, event)
 	}
 }
@@ -179,7 +181,30 @@ func TestASeismicEventCrossesTheWireInSeconds(t *testing.T) {
 // claim to be part of the first one.
 func TestABackgroundEventBelongsToNoBurst(t *testing.T) {
 	encoded, _ := json.Marshal(domain.SeismicEvent{Sequence: 1})
-	if !strings.Contains(string(encoded), `"burst":null`) || !strings.Contains(string(encoded), `"located_at_seconds":null`) {
+	if !strings.Contains(string(encoded), `"burst":null`) || !strings.Contains(string(encoded), `"located_at_seconds":null`) ||
+		!strings.Contains(string(encoded), `"picks_processed_at_seconds":null`) {
 		t.Errorf("unset burst and location times should be null: %s", encoded)
+	}
+}
+
+func TestATunnelOutsideTheMineIsRefusedByName(t *testing.T) {
+	mine := mineWithLayout()
+	mine.Layout.Tunnels = []domain.Tunnel{
+		{ID: "L600-drive", Kind: "drive", Path: []domain.Point{{X: 10, Y: 10, Z: -600}, {X: 990, Y: 10, Z: -600}}},
+		{ID: "adit", Kind: "access", Path: []domain.Point{{X: 10, Y: 10, Z: -600}, {X: 10, Y: 10, Z: 20}}},
+	}
+
+	err := mine.Validate()
+	if err == nil || !strings.Contains(err.Error(), `"adit"`) || strings.Contains(err.Error(), "L600") {
+		t.Errorf("Validate() = %v, want only tunnel adit named", err)
+	}
+}
+
+func TestATunnelOfOnePointIsRefused(t *testing.T) {
+	mine := mineWithLayout()
+	mine.Layout.Tunnels = []domain.Tunnel{{ID: "stub", Kind: "drive", Path: []domain.Point{{X: 10, Y: 10, Z: -600}}}}
+
+	if err := mine.Validate(); err == nil || !strings.Contains(err.Error(), `"stub"`) {
+		t.Errorf("Validate() = %v, want tunnel stub named", err)
 	}
 }
