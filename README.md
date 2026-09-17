@@ -59,6 +59,48 @@ anecdote.
 - [`docs/development.md`](docs/development.md) — working on it, driving it by hand against a real autoscaler
 - [`api/openapi.yaml`](api/openapi.yaml) — the HTTP contract, checked against the routes by a test
 
+## Versions
+
+Releases are [semantic versions](https://semver.org), tagged `vMAJOR.MINOR.PATCH`
+and cut with
+
+```bash
+make release VERSION=1.3.0
+```
+
+which refuses a dirty tree, a branch other than `main`, a `main` behind its
+remote, a version not above the last release, a `CHANGELOG.md` with no section
+for it, and failing checks — then tags, with the changelog section as the tag
+message, and pushes the commit and the tag together so CI stamps the image with
+the release. Between releases a build is `1.3.1-dev.N+<commit>`, and `.dirty`
+when built with uncommitted changes (`make version` prints it). Every binary
+carries its version and commit; `GET /api/version` reports them.
+
+For a service whose output is research results, a version answers one question
+besides "will my client break": **will a run replay the same way?**
+
+- **MAJOR** — the HTTP API changes incompatibly, or an existing scenario under
+  the same settings produces a different result: different jobs, queue
+  behaviour, recorded mine, locations or exposure. Results from two majors are
+  not comparable without saying so.
+- **MINOR** — something is added (an endpoint, a field, newly recorded data)
+  and every existing result is as it was.
+- **PATCH** — a fix that changes no result and no contract.
+
+`TestGeometryChangesNotOneJobOfAnExistingScenario` pins the job stream of the
+scenarios with runs recorded against them; a change that moves those digests is
+a MAJOR release by definition.
+
+### Provenance
+
+Every run records, as it begins, both services' builds and copies of the mine,
+scenario and effective settings it was given — `provenance` on
+`GET /api/runs/{id}`, with `reproducible` and, when it is not, the reasons. The
+database is tied to the code by commit, and no data is committed.
+`make -C ../platform-experiments reproduce RUN=<id>` rebuilds both commits and
+replays the run from its provenance, and exits zero only on an identical
+replay.
+
 ## Running
 
 ```bash
