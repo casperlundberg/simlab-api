@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/casperlundberg/simlab-api/internal/domain"
+	"github.com/casperlundberg/simlab-api/internal/workload"
 )
 
 // runRequest is what a caller sends to start a run.
@@ -195,6 +197,49 @@ func (s *server) runCycles(w http.ResponseWriter, r *http.Request) {
 		next = cycles[len(cycles)-1].Sequence
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"cycles": cycles, "next": next})
+}
+
+// runLayout is the sensor array a run's virtual mine was replayed against.
+func (s *server) runLayout(w http.ResponseWriter, r *http.Request) {
+	layout, err := s.Store.RunLayout(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"layout": layout})
+}
+
+// runSeismicity is a run's events, paged the way its cycles are: a long
+// scenario has tens of thousands, and a page following a live run should not
+// refetch the ones it already has.
+func (s *server) runSeismicity(w http.ResponseWriter, r *http.Request) {
+	from, _ := strconv.Atoi(r.URL.Query().Get("from"))
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+
+	events, err := s.Store.SeismicEvents(r.Context(), r.PathValue("id"), from, limit)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+
+	next := from
+	if len(events) > 0 {
+		next = events[len(events)-1].Sequence
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"events": events, "next": next})
+}
+
+// checkGeometry refuses a scenario whose bursts happen outside its mine.
+//
+// The run would refuse it too, but only once started, as a failed run somebody
+// has to go and read. A mine that does not exist is left for the store to
+// report, as it always has been.
+func (s *server) checkGeometry(ctx context.Context, scenario domain.Scenario) error {
+	mine, err := s.Store.Mine(ctx, scenario.MineID)
+	if err != nil {
+		return nil
+	}
+	return workload.CheckGeometry(mine, scenario)
 }
 
 func (s *server) runMetrics(w http.ResponseWriter, r *http.Request) {

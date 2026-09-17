@@ -33,6 +33,13 @@ judgement checked, not merely its outcome.
 The metrics are chosen so two runs are directly comparable on the only two
 questions that matter: did it hold the SLA, and what did that cost.
 
+A simulation run also records its **virtual mine**: where the sensors are,
+where each event happened, which sensors picked it up, and when the mine had
+processed enough of those picks to locate it. That last time is set by the
+queue, and so by the autoscaler — it is the operator-facing consequence of a
+scaling decision. The location is solved from processed picks, never read from
+the simulator's ground truth, which is recorded beside it for comparison.
+
 Because a scenario carries a seed, two runs replay exactly the same jobs. The
 difference between their results is attributable to the settings that changed
 and to nothing else — which is what makes it an experiment rather than an

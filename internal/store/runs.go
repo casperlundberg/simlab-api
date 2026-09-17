@@ -173,12 +173,22 @@ func (s *Store) SaveCycle(ctx context.Context, cycle domain.Cycle) error {
 	if err != nil {
 		return fmt.Errorf("encoding the queues of cycle %d: %w", cycle.Sequence, err)
 	}
+	// NULL when not recorded, so it is never confused with an empty queue.
+	var submitted any
+	if cycle.SubmittedDepths != nil {
+		encoded, err := json.Marshal(cycle.SubmittedDepths)
+		if err != nil {
+			return fmt.Errorf("encoding the submitted depths of cycle %d: %w", cycle.Sequence, err)
+		}
+		submitted = encoded
+	}
 
 	_, err = s.pool.Exec(ctx, `
 		INSERT INTO run_cycles (run_id, sequence, at, queues, local_ready, cloud_ready,
 			local_pending, cloud_pending, action, plan_local, plan_cloud, reason,
-			constraint_name, settings_version, breach_expected, completed, breached)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+			constraint_name, settings_version, breach_expected, completed, breached,
+			submitted_depths)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
 		ON CONFLICT (run_id, sequence) DO UPDATE SET
 			at = EXCLUDED.at, queues = EXCLUDED.queues,
 			local_ready = EXCLUDED.local_ready, cloud_ready = EXCLUDED.cloud_ready,
@@ -188,11 +198,12 @@ func (s *Store) SaveCycle(ctx context.Context, cycle domain.Cycle) error {
 			constraint_name = EXCLUDED.constraint_name,
 			settings_version = EXCLUDED.settings_version,
 			breach_expected = EXCLUDED.breach_expected,
-			completed = EXCLUDED.completed, breached = EXCLUDED.breached`,
+			completed = EXCLUDED.completed, breached = EXCLUDED.breached,
+			submitted_depths = EXCLUDED.submitted_depths`,
 		cycle.RunID, cycle.Sequence, cycle.At, queues, cycle.LocalReady, cycle.CloudReady,
 		cycle.LocalPending, cycle.CloudPending, cycle.Action, cycle.PlanLocal,
 		cycle.PlanCloud, cycle.Reason, cycle.Constraint, cycle.SettingsVersion,
-		cycle.BreachExpected, cycle.Completed, cycle.Breached)
+		cycle.BreachExpected, cycle.Completed, cycle.Breached, submitted)
 	if err != nil {
 		return fmt.Errorf("saving cycle %d of run %q: %w", cycle.Sequence, cycle.RunID, err)
 	}
@@ -211,7 +222,7 @@ func (s *Store) Cycles(ctx context.Context, runID string, from, limit int) ([]do
 	rows, err := s.pool.Query(ctx, `
 		SELECT run_id, sequence, at, queues, local_ready, cloud_ready, local_pending,
 			cloud_pending, action, plan_local, plan_cloud, reason, constraint_name,
-			settings_version, breach_expected, completed, breached
+			settings_version, breach_expected, completed, breached, submitted_depths
 		FROM run_cycles
 		WHERE run_id = $1 AND sequence > $2
 		ORDER BY sequence
@@ -224,14 +235,15 @@ func (s *Store) Cycles(ctx context.Context, runID string, from, limit int) ([]do
 	cycles := []domain.Cycle{}
 	for rows.Next() {
 		var (
-			cycle  domain.Cycle
-			queues []byte
+			cycle     domain.Cycle
+			queues    []byte
+			submitted []byte
 		)
 		if err := rows.Scan(&cycle.RunID, &cycle.Sequence, &cycle.At, &queues,
 			&cycle.LocalReady, &cycle.CloudReady, &cycle.LocalPending, &cycle.CloudPending,
 			&cycle.Action, &cycle.PlanLocal, &cycle.PlanCloud, &cycle.Reason,
 			&cycle.Constraint, &cycle.SettingsVersion, &cycle.BreachExpected,
-			&cycle.Completed, &cycle.Breached); err != nil {
+			&cycle.Completed, &cycle.Breached, &submitted); err != nil {
 			return nil, fmt.Errorf("reading a cycle of run %q: %w", runID, err)
 		}
 
@@ -246,6 +258,11 @@ func (s *Store) Cycles(ctx context.Context, runID string, from, limit int) ([]do
 				return nil, fmt.Errorf("cycle %d has %q as a priority level", cycle.Sequence, key)
 			}
 			cycle.Queues[domain.Priority(priority)] = level
+		}
+		if submitted != nil {
+			if err := json.Unmarshal(submitted, &cycle.SubmittedDepths); err != nil {
+				return nil, fmt.Errorf("reading the submitted depths of cycle %d: %w", cycle.Sequence, err)
+			}
 		}
 		cycles = append(cycles, cycle)
 	}

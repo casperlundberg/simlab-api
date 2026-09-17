@@ -138,6 +138,8 @@ var routes = []route{
 	{http.MethodPost, "/api/runs/{id}/cancel", false, func(s *server) http.HandlerFunc { return s.cancelRun }},
 	{http.MethodGet, "/api/runs/{id}/cycles", false, func(s *server) http.HandlerFunc { return s.runCycles }},
 	{http.MethodGet, "/api/runs/{id}/metrics", false, func(s *server) http.HandlerFunc { return s.runMetrics }},
+	{http.MethodGet, "/api/runs/{id}/layout", false, func(s *server) http.HandlerFunc { return s.runLayout }},
+	{http.MethodGet, "/api/runs/{id}/seismicity", false, func(s *server) http.HandlerFunc { return s.runSeismicity }},
 	{http.MethodGet, "/api/runs/{id}/events", false, func(s *server) http.HandlerFunc { return s.runEvents }},
 	{http.MethodGet, "/api/events", false, func(s *server) http.HandlerFunc { return s.allEvents }},
 
@@ -290,6 +292,10 @@ func (s *server) saveScenario(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		scenario.ID = id
+	}
+	if err := s.checkGeometry(r.Context(), scenario); err != nil {
+		writeStoreError(w, err)
+		return
 	}
 	if scenario.Seed == 0 {
 		// A scenario without a seed is not reproducible, and a caller who did

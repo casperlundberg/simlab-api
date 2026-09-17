@@ -9,11 +9,14 @@ package workload
 
 import (
 	"fmt"
+	"hash/fnv"
 	"math"
 	"math/rand/v2"
+	"sort"
 	"time"
 
 	"github.com/casperlundberg/simlab-api/internal/domain"
+	"github.com/casperlundberg/simlab-api/internal/seismic"
 )
 
 // maxJobs bounds what a single scenario may produce.
@@ -38,6 +41,38 @@ const diurnalAmplitude = 0.35
 // observed in practice.
 const omoriExponent = 1.1
 
+// Rock is the velocity model every mine is simulated with: one uniform P-wave
+// velocity for hard rock. seismic.Model says why a single velocity is enough
+// for what is being studied.
+var Rock = seismic.Model{PVelocitySeconds: 5800}
+
+// defaultExtent is the rock a mine is modelled as when it does not state its
+// own: the active volume of a large underground mine, 1.6 km by 1 km, between
+// the -400 and -1400 levels. A wave crosses it in about a third of a second.
+var defaultExtent = domain.Extent{
+	Min: domain.Point{X: 0, Y: 0, Z: -1400},
+	Max: domain.Point{X: 1600, Y: 1000, Z: -400},
+}
+
+// aftershockSpread is how far, as a standard deviation per axis in metres, a
+// burst's events fall from its epicentre. A burst is one volume of rock
+// failing, and the events that follow it come from around that volume rather
+// than from anywhere in the mine.
+const aftershockSpread = 60.0
+
+// The streams a scenario's seed drives. Separate streams rather than one
+// shared generator, because each is a dial someone will turn independently:
+// jobs were generated before geometry existed and must not move because of it;
+// where events happen must not move because pick noise was turned up; and a
+// mine's sensors must not move because a different scenario was replayed on
+// it.
+const (
+	jobStream      = 0x9E3779B97F4A7C15
+	geometryStream = 0xD1B54A32D192ED03
+	noiseStream    = 0x8CB92BA72F3D8DD7
+	layoutStream   = 0xA0761D6478BD642F
+)
+
 // Job is one unit of work arriving at the queue.
 type Job struct {
 	// ID is this job's identity within the run, so the mine can direct intent
@@ -52,44 +87,112 @@ type Job struct {
 
 	// Seconds is how long this job occupies an executor.
 	Seconds float64
+
+	// Event is the index, into Workload.Events, of the event this job is a
+	// pick of.
+	Event int
+}
+
+// Workload is everything a scenario generates: the jobs a run replays, and the
+// mine they came from.
+type Workload struct {
+	Jobs []Job
+
+	// Layout is the sensor array the picks came from, stated by the mine or
+	// derived for it.
+	Layout domain.Layout
+
+	// Model is the rock the arrivals travelled through.
+	Model seismic.Model
+
+	// Events are the detected events, in origin order. Each one's picks are a
+	// consecutive run of jobs.
+	Events []Event
+}
+
+// Event is one seismic event, and what the sensors made of it.
+type Event struct {
+	Origin time.Duration
+
+	// Burst is the index of the scenario burst this belongs to, or nil for
+	// background activity.
+	Burst *int
+
+	// Truth is where it really happened. Ground truth: known to the simulator
+	// and not to the mine, so nothing that decides processing order or solves
+	// for a location may read it.
+	Truth domain.Point
+
+	// Picks are the detections, first arrival first. Picks[k] is the pick that
+	// job FirstJob+k processes.
+	Picks    []seismic.Pick
+	FirstJob domain.JobID
 }
 
 // Generate produces the jobs for one scenario, deterministically from its
-// seed.
+// seed. It is Build without the mine, for callers that only replay work.
+func Generate(mine domain.Mine, scenario domain.Scenario) ([]Job, error) {
+	workload, err := Build(mine, scenario)
+	if err != nil {
+		return nil, err
+	}
+	return workload.Jobs, nil
+}
+
+// Build produces the jobs for one scenario and the mine they came from,
+// deterministically from its seed.
 //
 // Determinism is the point. Two runs of the same scenario replay exactly the
 // same jobs, so a difference in results can be attributed to the settings that
 // changed rather than to the workload having been different. The generator
-// uses an explicitly seeded PCG source rather than the package-level random
+// uses explicitly seeded PCG sources rather than the package-level random
 // number generator, which shares global state and would make one run's output
 // depend on what else the process happened to be doing.
-func Generate(mine domain.Mine, scenario domain.Scenario) ([]Job, error) {
+//
+// Jobs arrive at an event's origin time rather than at each pick's arrival.
+// The difference is under a second across the whole mine, far below any
+// decision interval, and keeping it is what keeps every scenario recorded
+// before geometry existed replaying the identical jobs.
+func Build(mine domain.Mine, scenario domain.Scenario) (Workload, error) {
 	if err := mine.Validate(); err != nil {
-		return nil, err
+		return Workload{}, err
 	}
 	if err := scenario.Validate(); err != nil {
-		return nil, err
+		return Workload{}, err
 	}
 
-	random := rand.New(rand.NewPCG(uint64(scenario.Seed), 0x9E3779B97F4A7C15))
+	random := rand.New(rand.NewPCG(uint64(scenario.Seed), jobStream))
+	geometry := rand.New(rand.NewPCG(uint64(scenario.Seed), geometryStream))
+	noise := rand.New(rand.NewPCG(uint64(scenario.Seed), noiseStream))
 
 	events, err := seismicEvents(mine, scenario, random)
 	if err != nil {
-		return nil, err
+		return Workload{}, err
 	}
 
 	priorities, weights := priorityTable(scenario)
 
 	// Each detecting sensor contributes one pick, so array size is what turns
-	// an event into an amount of work.
+	// an event into an amount of work. Checked before a layout is derived,
+	// which costs time in the square of the sensor count.
 	estimated := len(events) * int(math.Ceil(float64(mine.Sensors)*detectionProbability))
 	if estimated > maxJobs {
-		return nil, fmt.Errorf("this scenario would generate about %d jobs, which is too "+
+		return Workload{}, fmt.Errorf("this scenario would generate about %d jobs, which is too "+
 			"large to replay: reduce the duration, the burst magnitude, the sensor "+
 			"count or the background rate", estimated)
 	}
 
-	jobs := make([]Job, 0, estimated)
+	layout := layoutOf(mine)
+	epicentres, err := burstEpicentres(scenario, layout.Extent, geometry)
+	if err != nil {
+		return Workload{}, err
+	}
+
+	out := Workload{
+		Jobs:   make([]Job, 0, estimated),
+		Layout: layout,
+		Model:  Rock,
+	}
 	for _, at := range events {
 		picks := 0
 		for sensor := 0; sensor < mine.Sensors; sensor++ {
@@ -102,14 +205,32 @@ func Generate(mine domain.Mine, scenario domain.Scenario) ([]Job, error) {
 			continue
 		}
 
+		// The count above is the draw the job stream has always made. The
+		// geometry only decides which sensors those are — the nearest — and
+		// draws from streams of its own, so no job moves.
+		source := sourceOf(mine, scenario, at, geometry)
+		truth := placeEvent(source, epicentres, layout.Extent, geometry)
+		detecting := nearest(layout.Sensors, truth, picks)
+
+		event := Event{
+			Origin:   at,
+			Burst:    source,
+			Truth:    truth,
+			Picks:    Rock.Picks(seismic.Event{At: truth, Origin: at}, detecting, scenario.PickJitter, noise),
+			FirstJob: domain.JobID(len(out.Jobs)),
+		}
+		index := len(out.Events)
+		out.Events = append(out.Events, event)
+
 		for pick := 0; pick < picks; pick++ {
-			jobs = append(jobs, Job{
+			out.Jobs = append(out.Jobs, Job{
 				SubmittedAt: at,
 				Priority:    samplePriority(priorities, weights, random),
 				Seconds:     sampleDuration(scenario.JobSeconds, random),
+				Event:       index,
 			})
-			if len(jobs) > maxJobs {
-				return nil, fmt.Errorf("this scenario generated more than %d jobs, which is "+
+			if len(out.Jobs) > maxJobs {
+				return Workload{}, fmt.Errorf("this scenario generated more than %d jobs, which is "+
 					"too large to replay", maxJobs)
 			}
 		}
@@ -119,10 +240,146 @@ func Generate(mine domain.Mine, scenario domain.Scenario) ([]Job, error) {
 	// appended in event order and never reordered here, so this is a function
 	// of the seed and nothing else — which is what lets two runs of one
 	// scenario be compared job for job.
-	for i := range jobs {
-		jobs[i].ID = domain.JobID(i)
+	for i := range out.Jobs {
+		out.Jobs[i].ID = domain.JobID(i)
 	}
-	return jobs, nil
+	return out, nil
+}
+
+// layoutOf is the mine's stated array, or one derived from its id.
+//
+// From the id rather than the scenario's seed, because sensors do not move
+// between scenarios: two scenarios on one mine that placed its array
+// differently would be comparing two mines.
+func layoutOf(mine domain.Mine) domain.Layout {
+	if mine.Layout != nil {
+		return *mine.Layout
+	}
+	hash := fnv.New64a()
+	_, _ = hash.Write([]byte(mine.ID))
+	return seismic.Layout(defaultExtent, mine.Sensors, rand.New(rand.NewPCG(hash.Sum64(), layoutStream)))
+}
+
+// CheckGeometry refuses a scenario whose bursts are stated to happen outside
+// the mine it runs on. Build refuses it too; this is for saying so earlier,
+// without generating a workload to find out.
+func CheckGeometry(mine domain.Mine, scenario domain.Scenario) error {
+	extent := defaultExtent
+	if mine.Layout != nil {
+		extent = mine.Layout.Extent
+	}
+	for i, burst := range scenario.Bursts {
+		if err := epicentreProblem(i, burst, extent); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func epicentreProblem(i int, burst domain.Burst, extent domain.Extent) error {
+	if burst.Epicentre == nil || extent.Contains(*burst.Epicentre) {
+		return nil
+	}
+	return fmt.Errorf("burst %d has its epicentre at (%v, %v, %v), outside the mine, "+
+		"which spans (%v, %v, %v) to (%v, %v, %v)", i,
+		burst.Epicentre.X, burst.Epicentre.Y, burst.Epicentre.Z,
+		extent.Min.X, extent.Min.Y, extent.Min.Z, extent.Max.X, extent.Max.Y, extent.Max.Z)
+}
+
+// burstEpicentres is where each burst happened: as stated, or drawn.
+//
+// A candidate is drawn for every burst whether or not one is stated, so that
+// stating the epicentre of one burst moves that burst and nothing else.
+func burstEpicentres(scenario domain.Scenario, extent domain.Extent, random *rand.Rand) ([]domain.Point, error) {
+	out := make([]domain.Point, len(scenario.Bursts))
+	for i, burst := range scenario.Bursts {
+		out[i] = uniformIn(extent, random)
+		if burst.Epicentre == nil {
+			continue
+		}
+		if err := epicentreProblem(i, burst, extent); err != nil {
+			return nil, err
+		}
+		out[i] = *burst.Epicentre
+	}
+	return out, nil
+}
+
+// sourceOf decides whether an event belongs to a burst or to background
+// activity, in proportion to what each contributed to the rate at that
+// instant. It is the same rate the event's time was drawn from, so an event in
+// the first minute of a burst almost always belongs to it and one an hour into
+// a quiet shift almost never does.
+func sourceOf(mine domain.Mine, scenario domain.Scenario, at time.Duration, random *rand.Rand) *int {
+	background := mine.BackgroundRate * diurnal(at)
+	total := background
+	for _, burst := range scenario.Bursts {
+		total += burstRate(mine.BackgroundRate, burst, at)
+	}
+
+	draw := random.Float64() * total
+	if draw < background || total <= 0 {
+		return nil
+	}
+	draw -= background
+	for i, burst := range scenario.Bursts {
+		draw -= burstRate(mine.BackgroundRate, burst, at)
+		if draw < 0 {
+			index := i
+			return &index
+		}
+	}
+	// Rounding left the draw a hair past the last share; it belongs to the
+	// last burst contributing anything.
+	for i := len(scenario.Bursts) - 1; i >= 0; i-- {
+		if burstRate(mine.BackgroundRate, scenario.Bursts[i], at) > 0 {
+			index := i
+			return &index
+		}
+	}
+	return nil
+}
+
+// placeEvent is where in the rock an event happened.
+func placeEvent(source *int, epicentres []domain.Point, extent domain.Extent, random *rand.Rand) domain.Point {
+	if source == nil {
+		return uniformIn(extent, random)
+	}
+	centre := epicentres[*source]
+	return extent.Clamp(domain.Point{
+		X: centre.X + random.NormFloat64()*aftershockSpread,
+		Y: centre.Y + random.NormFloat64()*aftershockSpread,
+		Z: centre.Z + random.NormFloat64()*aftershockSpread,
+	})
+}
+
+func uniformIn(extent domain.Extent, random *rand.Rand) domain.Point {
+	spanX, spanY, spanZ := extent.Span()
+	return domain.Point{
+		X: extent.Min.X + random.Float64()*spanX,
+		Y: extent.Min.Y + random.Float64()*spanY,
+		Z: extent.Min.Z + random.Float64()*spanZ,
+	}
+}
+
+// nearest is the count sensors closest to a point, closest first. Ties go to
+// the sensor listed first, so the choice never depends on sort internals.
+func nearest(sensors []domain.Sensor, to domain.Point, count int) []domain.Sensor {
+	order := make([]int, len(sensors))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(a, b int) bool {
+		return sensors[order[a]].At.DistanceTo(to) < sensors[order[b]].At.DistanceTo(to)
+	})
+	if count > len(order) {
+		count = len(order)
+	}
+	out := make([]domain.Sensor, count)
+	for i := range out {
+		out[i] = sensors[order[i]]
+	}
+	return out
 }
 
 // seismicEvents draws event times from a rate that varies over the scenario.

@@ -59,6 +59,10 @@ type queued struct {
 	// breached records that this job has already been counted, so a job that
 	// waits ten times its deadline is still one missed SLA.
 	breached bool
+
+	// submitted is the priority the job arrived with. job.Priority is where
+	// it sits now, which a reprioritisation moves; this never changes.
+	submitted domain.Priority
 }
 
 // Simulator replays a job log against a changing number of executors.
@@ -143,7 +147,8 @@ func (s *Simulator) Advance(to time.Duration, executors int) Progress {
 		s.peakDepth = depth
 	}
 
-	progress := Progress{Completed: s.serve(interval, executors)}
+	finished := s.serve(interval, executors)
+	progress := Progress{Completed: len(finished), Finished: finished}
 	progress.Breached = s.countBreaches(to)
 	return progress
 }
@@ -153,7 +158,7 @@ func (s *Simulator) admitArrivals(to time.Duration) {
 	for s.next < len(s.arrivals) && s.arrivals[s.next].SubmittedAt <= to {
 		job := s.arrivals[s.next]
 		s.levels[job.Priority] = append(s.levels[job.Priority], &queued{
-			job: job, remaining: job.Seconds,
+			job: job, remaining: job.Seconds, submitted: job.Priority,
 		})
 		s.recent = append(s.recent, job.SubmittedAt)
 		s.submitted++
@@ -177,12 +182,12 @@ func (s *Simulator) admitArrivals(to time.Duration) {
 // executor cannot give one job more than the time that actually passed. Within
 // that, an executor is free to finish several short jobs in one interval,
 // which is exactly what a real one does.
-func (s *Simulator) serve(interval float64, executors int) int {
+func (s *Simulator) serve(interval float64, executors int) []domain.JobID {
 	budget := float64(executors) * interval
 	if budget <= 0 {
-		return 0
+		return nil
 	}
-	completed := 0
+	var completed []domain.JobID
 
 	// Work already in progress comes first: an executor that has started a job
 	// stays on it.
@@ -205,7 +210,7 @@ func (s *Simulator) serve(interval float64, executors int) int {
 
 		if item.remaining <= 1e-9 {
 			s.complete(item)
-			completed++
+			completed = append(completed, item.job.ID)
 			continue
 		}
 		stillRunning = append(stillRunning, item)
@@ -233,7 +238,7 @@ func (s *Simulator) serve(interval float64, executors int) int {
 
 			if item.remaining <= 1e-9 {
 				s.complete(item)
-				completed++
+				completed = append(completed, item.job.ID)
 				continue
 			}
 			s.running = append(s.running, item)
@@ -331,6 +336,27 @@ func (s *Simulator) Snapshot(now time.Duration) map[domain.Priority]domain.Queue
 		}
 		out[priority] = domain.QueueSnapshot{
 			ArrivalRate: count / s.arrivalWindow.Seconds(),
+		}
+	}
+	return out
+}
+
+// DepthBySubmittedPriority is the waiting work counted by the priority each
+// job was submitted at, where Snapshot counts it by the priority it holds now.
+//
+// Waiting only, as in Snapshot, so the two always total the same: work an
+// executor has started is no longer in the queue either way it is counted.
+// Never nil, because an empty queue and a count that was not taken are
+// different statements.
+//
+// Not part of the orchestrator seam. A real orchestrator knows where work sits
+// now; what it was submitted at is the mine's own record, and this simulator
+// reports it only because it happens to hold both.
+func (s *Simulator) DepthBySubmittedPriority() map[domain.Priority]int {
+	out := map[domain.Priority]int{}
+	for _, level := range s.levels {
+		for _, item := range level {
+			out[item.submitted]++
 		}
 	}
 	return out

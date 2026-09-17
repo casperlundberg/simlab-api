@@ -46,6 +46,15 @@ type Recorder interface {
 	SaveCycle(ctx context.Context, cycle domain.Cycle) error
 	SaveMetrics(ctx context.Context, metrics domain.Metrics) error
 	SetStatus(ctx context.Context, runID string, status domain.RunStatus, failure string) error
+
+	// SaveLayout records the sensor array a simulation's mine was modelled
+	// with.
+	SaveLayout(ctx context.Context, runID string, layout domain.Layout) error
+
+	// SaveSeismicEvents records events as the mine knows them, replacing any
+	// earlier record of the same events: all of them before the run starts,
+	// then each one again as it is located and processed.
+	SaveSeismicEvents(ctx context.Context, runID string, events []domain.SeismicEvent) error
 }
 
 // Publisher is how a run in flight reaches whoever is watching it.
@@ -148,10 +157,11 @@ func (e *Engine) Execute(ctx context.Context, spec Spec) (domain.Metrics, error)
 // previous run's executors, which the new run never provisioned and cannot
 // account for, and two concurrent runs would fight over one fleet.
 func (e *Engine) simulate(ctx context.Context, spec Spec) (domain.Metrics, error) {
-	jobs, err := workload.Generate(spec.Mine, spec.Scenario)
+	generated, err := workload.Build(spec.Mine, spec.Scenario)
 	if err != nil {
 		return domain.Metrics{}, err
 	}
+	catalogue := workload.NewCatalogue(generated)
 
 	if err := e.createTarget(ctx, spec); err != nil {
 		return domain.Metrics{}, err
@@ -167,7 +177,17 @@ func (e *Engine) simulate(ctx context.Context, spec Spec) (domain.Metrics, error
 		return domain.Metrics{}, err
 	}
 
-	simulator := queue.New(jobs, deadlines)
+	// The mine is recorded as the run begins rather than regenerated when
+	// someone looks: a scenario can be edited after it has been replayed, and
+	// a view of the mine should show what the autoscaler was deciding against.
+	if err := e.recorder.SaveLayout(ctx, spec.Run.ID, generated.Layout); err != nil {
+		return domain.Metrics{}, err
+	}
+	if err := e.recorder.SaveSeismicEvents(ctx, spec.Run.ID, catalogue.Events()); err != nil {
+		return domain.Metrics{}, err
+	}
+
+	simulator := queue.New(generated.Jobs, deadlines)
 	interval := spec.Run.DecisionInterval
 	start := spec.Run.SimulatedStart
 	if start.IsZero() {
@@ -202,11 +222,25 @@ func (e *Engine) simulate(ctx context.Context, spec Spec) (domain.Metrics, error
 		// kinder to the autoscaler than reality is.
 		progress := simulator.Advance(elapsed, capacity.LocalReady+capacity.CloudReady)
 
+		// Before the loop can end: the interval that drains the queue is the
+		// one that processes the last picks, and a location it produced but
+		// never recorded would leave an event unlocated for good.
+		located, err := catalogue.Observe(elapsed, progress.Finished)
+		if err != nil {
+			return metrics, fmt.Errorf("cycle %d: %w", sequence, err)
+		}
+		if len(located) > 0 {
+			if err := e.recorder.SaveSeismicEvents(ctx, spec.Run.ID, located); err != nil {
+				return metrics, err
+			}
+		}
+
 		if elapsed > spec.Scenario.Duration && simulator.Done() {
 			break
 		}
 
 		snapshot := simulator.Snapshot(elapsed)
+		submitted := simulator.DepthBySubmittedPriority()
 		result, err := e.autoscaler.Cycle(ctx, spec.Run.TargetID, autoscaler.CycleRequest{
 			At:       start.Add(elapsed),
 			Workload: toWorkload(snapshot, spec.Scenario.JobSeconds),
@@ -217,6 +251,7 @@ func (e *Engine) simulate(ctx context.Context, spec Spec) (domain.Metrics, error
 		capacity = result.Observation.Capacity
 
 		cycle := toCycle(spec.Run.ID, sequence, start.Add(elapsed), snapshot, result, progress)
+		cycle.SubmittedDepths = submitted
 		if err := e.recorder.SaveCycle(ctx, cycle); err != nil {
 			return metrics, err
 		}

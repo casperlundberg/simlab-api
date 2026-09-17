@@ -53,6 +53,7 @@ func TestEveryFieldOfACycleSurvivesTheDatabase(t *testing.T) {
 		Queues: map[domain.Priority]domain.QueueSnapshot{
 			100: {Depth: 42, OldestJobAgeSeconds: 31.5, ArrivalRate: 2.25},
 		},
+		SubmittedDepths: map[domain.Priority]int{100: 30, 25: 12},
 		LocalReady:      3,
 		CloudReady:      4,
 		LocalPending:    5,

@@ -282,6 +282,58 @@ paths:
         "200": { description: Metrics., content: { application/json: { schema: { $ref: "#/components/schemas/Metrics" } } } }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/runs/{id}/layout:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    get:
+      tags: [runs]
+      summary: The sensor array a run's virtual mine was replayed against
+      description: |
+        Recorded when the run started rather than read from the mine, which
+        can be edited afterwards: this is what the autoscaler was actually
+        deciding against.
+      responses:
+        "200":
+          description: The layout.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  layout: { $ref: "#/components/schemas/Layout" }
+        "404":
+          description: |
+            No such run, or a run with no virtual mine — a live run, or one
+            recorded before mines were modelled. The message says which.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /api/runs/{id}/seismicity:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+      - name: from
+        in: query
+        description: Return events after this sequence number.
+        schema: { type: integer, default: 0 }
+      - name: limit
+        in: query
+        schema: { type: integer, default: 5000, maximum: 20000 }
+    get:
+      tags: [runs]
+      summary: A run's seismic events, and when the mine could locate each one
+      description: |
+        Every detected event is recorded as the run starts, unlocated, and
+        updated as its picks are processed. While a run is in flight, re-read
+        this rather than assuming an earlier read is still current.
+      responses:
+        "200":
+          description: Events, in order, with the sequence to resume from.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events: { type: array, items: { $ref: "#/components/schemas/SeismicEvent" } }
+                  next: { type: integer }
+
   /api/runs/{id}/events:
     parameters: [{ $ref: "#/components/parameters/ID" }]
     get:
@@ -454,9 +506,86 @@ components:
         background_rate_per_hour:
           type: number
           description: Events per hour when nothing unusual is happening.
+        layout:
+          $ref: "#/components/schemas/Layout"
+          description: |
+            Where the sensors are. Optional: a mine that states none gets one
+            derived from its sensor count and id, the same in every scenario.
+            When stated it must place exactly `sensors` sensors, each inside
+            its extent.
         description: { type: string }
         created_at: { type: string, format: date-time }
       required: [id, name, sensors]
+
+    Point:
+      type: object
+      description: |
+        A position in metres. `z` is elevation against the surface datum, so
+        underground is negative and the -500 level is at z = -500.
+      properties:
+        x: { type: number }
+        y: { type: number }
+        z: { type: number }
+      required: [x, y, z]
+
+    Layout:
+      type: object
+      properties:
+        extent:
+          type: object
+          description: The volume of rock, as an axis-aligned box. Events happen and are located inside it.
+          properties:
+            min: { $ref: "#/components/schemas/Point" }
+            max: { $ref: "#/components/schemas/Point" }
+        sensors:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              at: { $ref: "#/components/schemas/Point" }
+
+    Location:
+      type: object
+      description: A location the mine solved from picks.
+      properties:
+        at: { $ref: "#/components/schemas/Point" }
+        rms_residual_seconds:
+          type: number
+          description: The arrival-time error the solution could not explain — how far to trust it.
+        picks: { type: integer, description: How many detections it was solved from. }
+
+    SeismicEvent:
+      type: object
+      properties:
+        run_id: { type: string }
+        sequence: { type: integer }
+        origin_seconds: { type: number, description: When it happened, from the start of the scenario. }
+        burst:
+          type: [integer, "null"]
+          description: The index of the scenario burst it belongs to; null for background activity.
+        truth:
+          $ref: "#/components/schemas/Point"
+          description: |
+            Where it really happened. Known to the simulator and to nothing
+            else: the mine never reads it, and it is here so an estimate can be
+            compared with what it estimated.
+        sensors:
+          type: array
+          items: { type: string }
+          description: The sensors that detected it, first arrival first. Each is one pick job.
+        located_at_seconds:
+          type: [number, "null"]
+          description: When enough of its picks had been processed to locate it. Null until then.
+        located:
+          oneOf: [{ $ref: "#/components/schemas/Location" }, { type: "null" }]
+          description: The first location, solved from the picks processed by then.
+        processed_at_seconds:
+          type: [number, "null"]
+          description: When every one of its picks had been processed.
+        final:
+          oneOf: [{ $ref: "#/components/schemas/Location" }, { type: "null" }]
+          description: The location solved from every pick. Null for an event too few sensors saw.
 
     Burst:
       type: object
@@ -478,6 +607,12 @@ components:
             The timescale of the Omori-law aftershock tail. Zero means the
             event subsides at once, which makes recovery far easier than it is
             in practice.
+        epicentre:
+          $ref: "#/components/schemas/Point"
+          description: |
+            Where in the rock it happens; its aftershocks cluster around it.
+            Optional, and drawn from the seed when absent. Must lie inside the
+            mine, or the scenario is refused when saved.
       required: [at_seconds, magnitude]
 
     Scenario:
@@ -490,6 +625,14 @@ components:
         job_seconds:
           type: number
           description: How long one job occupies an executor, before per-job variation.
+        pick_jitter_seconds:
+          type: number
+          minimum: 0
+          description: |
+            The standard deviation of pick error: how far a sensor's reported
+            arrival is from the true one. It is the dial that sets how
+            uncertain the mine's locations are, and turning it moves no event
+            and no job.
         seed:
           type: integer
           format: int64
@@ -580,7 +723,16 @@ components:
         at: { type: string, format: date-time }
         queues:
           type: object
+          description: The waiting work by the priority each job holds now, which is the order it will be served in.
           additionalProperties: { $ref: "#/components/schemas/QueueSnapshot" }
+        depth_by_submitted_priority:
+          type: [object, "null"]
+          additionalProperties: { type: integer }
+          description: |
+            The same waiting work counted by the priority each job was
+            submitted at. It differs from `queues` only once something has
+            changed a priority after submission. Null for a cycle recorded
+            before this was tracked, which is not the same as an empty queue.
         local_ready: { type: integer }
         cloud_ready: { type: integer }
         local_pending: { type: integer }

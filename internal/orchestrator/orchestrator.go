@@ -98,6 +98,14 @@ type Rejection struct {
 type Progress struct {
 	Completed int
 	Breached  int
+
+	// Finished is which jobs completed, one entry per job in Completed.
+	//
+	// The mine needs the ids, not only the count: an event has a location once
+	// enough of its own picks are processed, and a count cannot say whose
+	// they were. Every real orchestrator reports completion per process, so
+	// this asks nothing of an adapter that it cannot answer.
+	Finished []domain.JobID
 }
 
 // Stats is what a whole run amounted to.

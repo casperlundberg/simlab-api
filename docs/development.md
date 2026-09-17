@@ -52,7 +52,9 @@ workload, the difference is the settings.
 | Package | What it owns |
 |---|---|
 | `internal/domain` | Mines, scenarios, runs, cycles, metrics. Values only. |
-| `internal/workload` | Turning a scenario into jobs, deterministically from its seed. |
+| `internal/workload` | Turning a scenario into jobs and the mine they came from — sensor layout, event epicentres, picks — deterministically from its seed. Also the `Catalogue`: the mine locating events as its picks are processed. |
+| `internal/seismic` | The physics: travel times, picks, solving a location from picks, placing sensors. |
+| `internal/orchestrator` | The seam in front of the queue, with the capabilities a real orchestrator declares. |
 | `internal/queue` | The job-level simulation: arrivals, service, deadlines missed. |
 | `internal/autoscaler` | The client for the autoscaler service, plus a fake to test against. |
 | `internal/run` | The engine: replay a workload, or watch real infrastructure. |
@@ -81,6 +83,17 @@ must stay deterministic from the seed. Two rules:
 - Never iterate a map to make a decision. Go randomises map order, and the
   same scenario would replay different jobs. `SortedPriorities` exists for
   exactly this.
+- A new dial draws from a stream of its own. Jobs, event geometry and pick
+  noise each have a separate PCG stream off the seed, so turning pick jitter
+  moves no event and adding geometry moved no job. Sharing one stream would
+  make every dial move everything drawn after it.
+  `TestGeometryChangesNotOneJobOfAnExistingScenario` pins the job stream of
+  the scenarios with runs already recorded against them; if a change has to
+  move it, that is a decision to say out loud, not a digest to update quietly.
+
+The mine never reads an event's `Truth`. A location is solved from the picks
+the queue has reported processed, as a real installation would have to; the
+truth is recorded beside it only so the two can be compared.
 
 Statistical assertions need enough events to be stable. At twenty events an
 hour the sampling noise is wider than most effects worth testing, so the

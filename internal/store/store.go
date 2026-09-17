@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"time"
 
@@ -55,27 +56,34 @@ func (s *Store) SaveMine(ctx context.Context, mine domain.Mine) error {
 	if err := mine.Validate(); err != nil {
 		return err
 	}
+	var layout any
+	if mine.Layout != nil {
+		encoded, err := json.Marshal(mine.Layout)
+		if err != nil {
+			return fmt.Errorf("encoding the layout of mine %q: %w", mine.ID, err)
+		}
+		layout = encoded
+	}
+
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO mines (id, name, sensors, background_rate, description)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO mines (id, name, sensors, background_rate, description, layout)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (id) DO UPDATE SET
 			name = EXCLUDED.name, sensors = EXCLUDED.sensors,
-			background_rate = EXCLUDED.background_rate, description = EXCLUDED.description`,
-		mine.ID, mine.Name, mine.Sensors, mine.BackgroundRate, mine.Description)
+			background_rate = EXCLUDED.background_rate, description = EXCLUDED.description,
+			layout = EXCLUDED.layout`,
+		mine.ID, mine.Name, mine.Sensors, mine.BackgroundRate, mine.Description, layout)
 	if err != nil {
 		return fmt.Errorf("saving mine %q: %w", mine.ID, err)
 	}
 	return nil
 }
 
+const mineColumns = `SELECT id, name, sensors, background_rate, description, layout, created_at FROM mines`
+
 // Mine fetches one mine.
 func (s *Store) Mine(ctx context.Context, id string) (domain.Mine, error) {
-	var mine domain.Mine
-	err := s.pool.QueryRow(ctx, `
-		SELECT id, name, sensors, background_rate, description, created_at
-		FROM mines WHERE id = $1`, id,
-	).Scan(&mine.ID, &mine.Name, &mine.Sensors, &mine.BackgroundRate,
-		&mine.Description, &mine.CreatedAt)
+	mine, err := scanMine(s.pool.QueryRow(ctx, mineColumns+` WHERE id = $1`, id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Mine{}, fmt.Errorf("%w: mine %q", ErrNotFound, id)
 	}
@@ -87,9 +95,7 @@ func (s *Store) Mine(ctx context.Context, id string) (domain.Mine, error) {
 
 // Mines lists every mine, by name.
 func (s *Store) Mines(ctx context.Context) ([]domain.Mine, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT id, name, sensors, background_rate, description, created_at
-		FROM mines ORDER BY name`)
+	rows, err := s.pool.Query(ctx, mineColumns+` ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("listing mines: %w", err)
 	}
@@ -97,14 +103,31 @@ func (s *Store) Mines(ctx context.Context) ([]domain.Mine, error) {
 
 	mines := []domain.Mine{}
 	for rows.Next() {
-		var mine domain.Mine
-		if err := rows.Scan(&mine.ID, &mine.Name, &mine.Sensors, &mine.BackgroundRate,
-			&mine.Description, &mine.CreatedAt); err != nil {
+		mine, err := scanMine(rows)
+		if err != nil {
 			return nil, fmt.Errorf("reading a mine: %w", err)
 		}
 		mines = append(mines, mine)
 	}
 	return mines, rows.Err()
+}
+
+func scanMine(row scannable) (domain.Mine, error) {
+	var (
+		mine   domain.Mine
+		layout []byte
+	)
+	if err := row.Scan(&mine.ID, &mine.Name, &mine.Sensors, &mine.BackgroundRate,
+		&mine.Description, &layout, &mine.CreatedAt); err != nil {
+		return domain.Mine{}, err
+	}
+	if layout != nil {
+		mine.Layout = &domain.Layout{}
+		if err := json.Unmarshal(layout, mine.Layout); err != nil {
+			return domain.Mine{}, fmt.Errorf("reading the layout of mine %q: %w", mine.ID, err)
+		}
+	}
+	return mine, nil
 }
 
 // DeleteMine removes a mine and, by cascade, its scenarios.
@@ -136,15 +159,17 @@ func (s *Store) SaveScenario(ctx context.Context, scenario domain.Scenario) erro
 
 	_, err = s.pool.Exec(ctx, `
 		INSERT INTO scenarios (id, mine_id, name, duration_ms, job_seconds, seed,
-			priority_mix, bursts, description)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			priority_mix, bursts, description, pick_jitter_ms)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT (id) DO UPDATE SET
 			mine_id = EXCLUDED.mine_id, name = EXCLUDED.name,
 			duration_ms = EXCLUDED.duration_ms, job_seconds = EXCLUDED.job_seconds,
 			seed = EXCLUDED.seed, priority_mix = EXCLUDED.priority_mix,
-			bursts = EXCLUDED.bursts, description = EXCLUDED.description`,
+			bursts = EXCLUDED.bursts, description = EXCLUDED.description,
+			pick_jitter_ms = EXCLUDED.pick_jitter_ms`,
 		scenario.ID, scenario.MineID, scenario.Name, scenario.Duration.Milliseconds(),
-		scenario.JobSeconds, scenario.Seed, mix, bursts, scenario.Description)
+		scenario.JobSeconds, scenario.Seed, mix, bursts, scenario.Description,
+		float64(scenario.PickJitter)/float64(time.Millisecond))
 	if err != nil {
 		return fmt.Errorf("saving scenario %q: %w", scenario.ID, err)
 	}
@@ -155,7 +180,7 @@ func (s *Store) SaveScenario(ctx context.Context, scenario domain.Scenario) erro
 func (s *Store) Scenario(ctx context.Context, id string) (domain.Scenario, error) {
 	return s.scanScenario(s.pool.QueryRow(ctx, `
 		SELECT id, mine_id, name, duration_ms, job_seconds, seed, priority_mix,
-			bursts, description, created_at
+			bursts, description, pick_jitter_ms, created_at
 		FROM scenarios WHERE id = $1`, id), id)
 }
 
@@ -163,7 +188,7 @@ func (s *Store) Scenario(ctx context.Context, id string) (domain.Scenario, error
 func (s *Store) Scenarios(ctx context.Context, mineID string) ([]domain.Scenario, error) {
 	query := `
 		SELECT id, mine_id, name, duration_ms, job_seconds, seed, priority_mix,
-			bursts, description, created_at
+			bursts, description, pick_jitter_ms, created_at
 		FROM scenarios`
 	args := []any{}
 	if mineID != "" {
@@ -219,14 +244,16 @@ func (s *Store) scanScenarioRow(row scannable) (domain.Scenario, error) {
 		durationMs int64
 		mix        []byte
 		bursts     []byte
+		jitterMs   float64
 	)
 	if err := row.Scan(&scenario.ID, &scenario.MineID, &scenario.Name, &durationMs,
 		&scenario.JobSeconds, &scenario.Seed, &mix, &bursts,
-		&scenario.Description, &scenario.CreatedAt); err != nil {
+		&scenario.Description, &jitterMs, &scenario.CreatedAt); err != nil {
 		return domain.Scenario{}, err
 	}
 
 	scenario.Duration = time.Duration(durationMs) * time.Millisecond
+	scenario.PickJitter = time.Duration(math.Round(jitterMs * float64(time.Millisecond)))
 
 	var wireMix map[string]float64
 	if err := json.Unmarshal(mix, &wireMix); err != nil {
@@ -251,6 +278,7 @@ func (s *Store) scanScenarioRow(row scannable) (domain.Scenario, error) {
 			At:              time.Duration(burst.AtMs) * time.Millisecond,
 			Magnitude:       burst.Magnitude,
 			AftershockDecay: time.Duration(burst.DecayMs) * time.Millisecond,
+			Epicentre:       burst.Epicentre,
 		})
 	}
 	return scenario, nil
@@ -263,6 +291,8 @@ type burstWire struct {
 	AtMs      int64   `json:"at_ms"`
 	Magnitude float64 `json:"magnitude"`
 	DecayMs   int64   `json:"aftershock_decay_ms"`
+
+	Epicentre *domain.Point `json:"epicentre,omitempty"`
 }
 
 func burstsToWire(bursts []domain.Burst) []burstWire {
@@ -272,6 +302,7 @@ func burstsToWire(bursts []domain.Burst) []burstWire {
 			AtMs:      burst.At.Milliseconds(),
 			Magnitude: burst.Magnitude,
 			DecayMs:   burst.AftershockDecay.Milliseconds(),
+			Epicentre: burst.Epicentre,
 		})
 	}
 	return out

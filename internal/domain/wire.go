@@ -21,6 +21,7 @@ type burstWire struct {
 	AtSeconds              float64 `json:"at_seconds"`
 	Magnitude              float64 `json:"magnitude"`
 	AftershockDecaySeconds float64 `json:"aftershock_decay_seconds,omitempty"`
+	Epicentre              *Point  `json:"epicentre,omitempty"`
 }
 
 // MarshalJSON renders a burst with its offsets in seconds.
@@ -29,6 +30,7 @@ func (b Burst) MarshalJSON() ([]byte, error) {
 		AtSeconds:              b.At.Seconds(),
 		Magnitude:              b.Magnitude,
 		AftershockDecaySeconds: b.AftershockDecay.Seconds(),
+		Epicentre:              b.Epicentre,
 	})
 }
 
@@ -42,6 +44,7 @@ func (b *Burst) UnmarshalJSON(data []byte) error {
 		At:              seconds(wire.AtSeconds),
 		Magnitude:       wire.Magnitude,
 		AftershockDecay: seconds(wire.AftershockDecaySeconds),
+		Epicentre:       wire.Epicentre,
 	}
 	return nil
 }
@@ -52,6 +55,7 @@ type scenarioWire struct {
 	Name            string             `json:"name"`
 	DurationSeconds float64            `json:"duration_seconds"`
 	JobSeconds      float64            `json:"job_seconds"`
+	PickJitter      float64            `json:"pick_jitter_seconds,omitempty"`
 	Seed            int64              `json:"seed"`
 	PriorityMix     map[string]float64 `json:"priority_mix"`
 	Bursts          []Burst            `json:"bursts,omitempty"`
@@ -69,6 +73,7 @@ func (s Scenario) MarshalJSON() ([]byte, error) {
 		ID: s.ID, MineID: s.MineID, Name: s.Name,
 		DurationSeconds: s.Duration.Seconds(),
 		JobSeconds:      s.JobSeconds,
+		PickJitter:      s.PickJitter.Seconds(),
 		Seed:            s.Seed,
 		PriorityMix:     mix,
 		Bursts:          s.Bursts,
@@ -97,6 +102,7 @@ func (s *Scenario) UnmarshalJSON(data []byte) error {
 		ID: wire.ID, MineID: wire.MineID, Name: wire.Name,
 		Duration:    seconds(wire.DurationSeconds),
 		JobSeconds:  wire.JobSeconds,
+		PickJitter:  seconds(wire.PickJitter),
 		Seed:        wire.Seed,
 		PriorityMix: mix,
 		Bursts:      wire.Bursts,

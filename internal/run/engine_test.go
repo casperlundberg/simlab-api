@@ -25,6 +25,33 @@ type recorder struct {
 	failures []string
 
 	failSaveCycleAt int
+
+	layouts []domain.Layout
+
+	// seismic is each event's latest record, by sequence, as a store that
+	// upserts would hold it; seismicWrites is every write in order.
+	seismic       map[int]domain.SeismicEvent
+	seismicWrites [][]domain.SeismicEvent
+}
+
+func (r *recorder) SaveLayout(_ context.Context, _ string, layout domain.Layout) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.layouts = append(r.layouts, layout)
+	return nil
+}
+
+func (r *recorder) SaveSeismicEvents(_ context.Context, _ string, events []domain.SeismicEvent) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.seismic == nil {
+		r.seismic = map[int]domain.SeismicEvent{}
+	}
+	for _, event := range events {
+		r.seismic[event.Sequence] = event
+	}
+	r.seismicWrites = append(r.seismicWrites, events)
+	return nil
 }
 
 func (r *recorder) SaveCycle(_ context.Context, cycle domain.Cycle) error {
@@ -464,4 +491,121 @@ func createLiveTarget(h *harness) error {
 		ID: "storhall", Kind: "kubernetes", Mode: "autonomous",
 	}, nil)
 	return err
+}
+
+// The virtual mine a run replayed is part of what it recorded. A 3D view built
+// by regenerating it later would show whatever the scenario had been edited
+// into since, not what the autoscaler was actually deciding against.
+func TestASimulationRunRecordsTheMineItReplayed(t *testing.T) {
+	h := newHarness(t)
+
+	if _, err := h.engine.Execute(context.Background(), simulationSpec()); err != nil {
+		t.Fatalf("Execute() = %v", err)
+	}
+
+	if len(h.recorder.layouts) != 1 {
+		t.Fatalf("the layout was saved %d times, want once", len(h.recorder.layouts))
+	}
+	if got := len(h.recorder.layouts[0].Sensors); got != mine().Sensors {
+		t.Errorf("the recorded array has %d sensors, the mine has %d", got, mine().Sensors)
+	}
+	if len(h.recorder.seismicWrites) == 0 || len(h.recorder.seismicWrites[0]) == 0 {
+		t.Fatal("no seismic events were recorded before the run began")
+	}
+	for _, event := range h.recorder.seismicWrites[0] {
+		if event.LocatedAt != nil || event.ProcessedAt != nil {
+			t.Fatalf("event %d was recorded as located before anything ran", event.Sequence)
+		}
+	}
+}
+
+// Every event's picks are jobs, and a completed run has completed every job,
+// so every event is processed by the end. The last interval matters most here:
+// the loop ends on the interval that drains the queue, and a location it
+// produced but never recorded would leave an event unlocated forever.
+func TestByTheEndOfARunEveryEventHasBeenProcessed(t *testing.T) {
+	h := newHarness(t)
+
+	metrics, err := h.engine.Execute(context.Background(), simulationSpec())
+	if err != nil {
+		t.Fatalf("Execute() = %v", err)
+	}
+
+	picks := 0
+	for _, event := range h.recorder.seismic {
+		picks += len(event.Sensors)
+		if event.ProcessedAt == nil {
+			t.Fatalf("event %d (%d picks) was never processed", event.Sequence, len(event.Sensors))
+		}
+		if len(event.Sensors) >= 4 && event.LocatedAt == nil {
+			t.Fatalf("event %d had %d picks processed and no location", event.Sequence, len(event.Sensors))
+		}
+		if event.LocatedAt != nil && (*event.LocatedAt < event.Origin || *event.ProcessedAt < *event.LocatedAt) {
+			t.Fatalf("event %d: origin %v, located %v, processed %v — out of order",
+				event.Sequence, event.Origin, *event.LocatedAt, *event.ProcessedAt)
+		}
+	}
+	if picks != metrics.JobsSubmitted {
+		t.Errorf("events account for %d picks, the run submitted %d jobs", picks, metrics.JobsSubmitted)
+	}
+}
+
+// This is the link between the mine and the autoscaler: capacity is what
+// decides how long an operator waits for a location.
+func TestLessCapacityMeansLongerToLocateAnEvent(t *testing.T) {
+	delays := func(settings string, id string) float64 {
+		h := newHarness(t)
+		spec := simulationSpec()
+		spec.Run.ID, spec.Run.TargetID = id, id
+		spec.Settings = json.RawMessage(settings)
+		if _, err := h.engine.Execute(context.Background(), spec); err != nil {
+			t.Fatalf("Execute() = %v", err)
+		}
+		total, n := 0.0, 0
+		for _, event := range h.recorder.seismic {
+			if event.LocatedAt != nil {
+				total += (*event.LocatedAt - event.Origin).Seconds()
+				n++
+			}
+		}
+		if n == 0 {
+			t.Fatalf("%s: nothing was located", id)
+		}
+		return total / float64(n)
+	}
+
+	tight := delays(`{"local_executor_cap": 2, "cloud_executor_cap": 0}`, "tight")
+	generous := delays(`{"local_executor_cap": 200, "cloud_executor_cap": 400}`, "generous")
+	if tight <= generous {
+		t.Errorf("two executors located events in %.0f s on average and two hundred in %.0f s",
+			tight, generous)
+	}
+}
+
+// Nothing in a plain run changes a priority after submission, so the two
+// counts of the queue agree level by level. Once something does, this is the
+// test that should start needing an exception, and the charts are what show it.
+func TestEachCycleCountsTheQueueBySubmittedPriorityToo(t *testing.T) {
+	h := newHarness(t)
+
+	if _, err := h.engine.Execute(context.Background(), simulationSpec()); err != nil {
+		t.Fatalf("Execute() = %v", err)
+	}
+
+	waiting := false
+	for _, cycle := range h.recorder.cycles {
+		if cycle.SubmittedDepths == nil {
+			t.Fatalf("cycle %d did not record the queue by submitted priority", cycle.Sequence)
+		}
+		for priority, level := range cycle.Queues {
+			if cycle.SubmittedDepths[priority] != level.Depth {
+				t.Fatalf("cycle %d: P%d holds %d now but %d were submitted at it, and nothing "+
+					"reprioritises", cycle.Sequence, priority, level.Depth, cycle.SubmittedDepths[priority])
+			}
+			waiting = waiting || level.Depth > 0
+		}
+	}
+	if !waiting {
+		t.Error("no cycle had anything waiting, so this proves nothing")
+	}
 }

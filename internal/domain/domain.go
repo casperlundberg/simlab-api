@@ -52,9 +52,11 @@ type Mine struct {
 	// Layout is where the sensors are, and the volume they watch.
 	//
 	// Optional. A mine given only a sensor count still works: a layout is
-	// derived from that count and the scenario's seed, so every scenario
-	// written before geometry existed keeps replaying identically. Set it to
-	// state a real array rather than accept a generated one.
+	// derived from that count and the mine's id. From the id rather than a
+	// scenario's seed, because sensors do not move between scenarios — two
+	// scenarios on one mine that placed its array differently would be
+	// comparing two mines. Set it to state a real array rather than accept a
+	// generated one.
 	Layout *Layout `json:"layout,omitempty"`
 
 	Description string    `json:"description,omitempty"`
@@ -76,6 +78,9 @@ func (m Mine) Validate() error {
 	if m.BackgroundRate < 0 {
 		problems = append(problems, fmt.Sprintf("background_rate_per_hour must be >= 0, got %v",
 			m.BackgroundRate))
+	}
+	if m.Layout != nil {
+		problems = append(problems, m.Layout.problems(m.Sensors)...)
 	}
 	if len(problems) > 0 {
 		return fmt.Errorf("mine is not usable: %s", strings.Join(problems, "; "))
@@ -175,6 +180,10 @@ func (s Scenario) Validate() error {
 			break
 		}
 		total += weight
+	}
+	if s.PickJitter < 0 {
+		problems = append(problems, fmt.Sprintf("pick_jitter_seconds must be >= 0, got %v",
+			s.PickJitter.Seconds()))
 	}
 	if len(s.PriorityMix) > 0 && total <= 0 {
 		problems = append(problems, "priority_mix weights are all zero, so no job could be given a priority")
@@ -315,8 +324,18 @@ type Cycle struct {
 	// At is the simulated (or real) instant of the cycle.
 	At time.Time `json:"at"`
 
-	// Queues is the workload the decision was taken against.
+	// Queues is the workload the decision was taken against, by the priority
+	// each job holds now — which is the order the queue will serve it in.
 	Queues map[Priority]QueueSnapshot `json:"queues"`
+
+	// SubmittedDepths is the same waiting work counted by the priority each
+	// job was submitted at.
+	//
+	// It differs from Queues only once something has changed a priority after
+	// submission, and that difference is what it exists to show. Nil means
+	// the cycle was recorded before this was tracked, which is not the same as
+	// an empty queue — so it is not omitted from the wire when nil.
+	SubmittedDepths map[Priority]int `json:"depth_by_submitted_priority"`
 
 	// Capacity is what was running.
 	LocalReady   int `json:"local_ready"`
