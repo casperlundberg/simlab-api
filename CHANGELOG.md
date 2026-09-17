@@ -19,6 +19,9 @@ simulation runs now decay work by default, and breaches are counted correctly.
   cloud capacity is bought. Needs autoscaler 1.1.0 to take effect.
 - **Deadline origin.** A moved job's deadline is measured from its arrival, or
   optionally from the change.
+- **Restore.** Decayed work returns to its submitted priority when something
+  protected comes within reach, unless `restore` is off; restored work is its
+  own class for exemption, because it often returns already late.
 - **Changing intent while a run is in flight**: `GET` and `PATCH
   /api/runs/{id}/intent`, with compare-and-swap. Every version that takes effect
   is recorded with its cycle, and replaying them as `intent_schedule` on a new

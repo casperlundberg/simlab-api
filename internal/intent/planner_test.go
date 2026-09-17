@@ -478,3 +478,64 @@ func TestAPathIsWhereAnEntityIsAndWhereItIsGoing(t *testing.T) {
 		t.Errorf("DistanceTo() = %v, want 40", d)
 	}
 }
+
+// Restored work comes back to its submitted level having waited all the while,
+// and exempting it is how an operator keeps a restore from buying cloud.
+func TestRestoredWorkCanBeExempt(t *testing.T) {
+	walker := domain.Entity{ID: "person-01", Kind: domain.EntityPerson, Track: []domain.Waypoint{
+		{At: 0, Point: person}, {At: 60 * time.Second, Point: person},
+		{At: 120 * time.Second, Point: far}, {At: 24 * time.Hour, Point: far},
+	}}
+	w := mine(domain.PriorityAssociate, walker)
+	p := intent.New(w, workload.NewCatalogue(w),
+		settings(`{"knowledge":"truth","lookahead_seconds":0,"burst_exempt":["restored"]}`))
+
+	for _, u := range p.Plan(30 * time.Second).Updates {
+		if u.BurstExempt {
+			t.Errorf("decayed job %d is exempt, but only restored work was named", u.JobID)
+		}
+	}
+	// By two minutes the person has left the other two events behind, and
+	// their work decays; the far event's is what comes back.
+	restored := moved(p.Plan(120 * time.Second).Updates)
+	for _, id := range jobsOf(w, farEvent) {
+		if u, ok := restored[id]; !ok || u.Priority != domain.PriorityAssociate || !u.BurstExempt {
+			t.Errorf("job %d: %+v, want restored and exempt", id, u)
+		}
+	}
+}
+
+// Without restore, decay is final: a pure relaxation.
+func TestWithoutRestoreDecayIsFinal(t *testing.T) {
+	walker := domain.Entity{ID: "person-01", Kind: domain.EntityPerson, Track: []domain.Waypoint{
+		{At: 0, Point: person}, {At: 60 * time.Second, Point: person},
+		{At: 120 * time.Second, Point: far}, {At: 24 * time.Hour, Point: far},
+	}}
+	w := mine(domain.PriorityAssociate, walker)
+	p := intent.New(w, workload.NewCatalogue(w), settings(`{"knowledge":"truth","lookahead_seconds":0,"restore":false}`))
+	p.Plan(30 * time.Second)
+
+	plan := p.Plan(120 * time.Second)
+
+	for _, id := range jobsOf(w, farEvent) {
+		if u, ok := moved(plan.Updates)[id]; ok {
+			t.Errorf("job %d moved to %+v once the person was there, want the decay to stand", id, u)
+		}
+	}
+	if tr, _ := stateOf(plan, farEvent); tr.State != domain.EventKept {
+		t.Errorf("far event = %+v: the judgement still changes, and is recorded, even when the work does not", tr)
+	}
+
+	// By now the person has left the other two events behind, so they have
+	// decayed too.
+	p.Configure(settings(`{"mode":"off","restore":false}`))
+	off := moved(p.Plan(135 * time.Second).Updates)
+	if len(off) != len(w.Jobs) {
+		t.Errorf("switching intent off moved %d jobs, want all %d decayed ones restored", len(off), len(w.Jobs))
+	}
+	for id, u := range off {
+		if u.Priority != domain.PriorityAssociate {
+			t.Errorf("job %d = %+v, want restored", id, u)
+		}
+	}
+}

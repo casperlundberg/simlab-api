@@ -34,10 +34,19 @@ every protected route.
 | `pre_location` | false | Act before a location, from the first sensor to trigger. |
 | `pre_location_magnitude` | 1.5 | The magnitude assumed before one is estimated. |
 | `deadline_from` | `arrival` | A moved job's deadline is measured from arrival, or from the change. |
-| `burst_exempt` | none | `decayed` and/or `promoted` work may not be the reason cloud is bought. |
+| `restore` | true | Decayed work returns when something protected comes within reach. False makes decay final. |
+| `burst_exempt` | none | `decayed`, `promoted` and/or `restored` work may not be the reason cloud is bought. |
 
-Decay is the default because it only relaxes: nothing becomes more urgent, so
-nothing new can demand capacity.
+Decay is the default because it relaxes: it makes nothing more urgent. That is
+only wholly true of decay itself. Decayed work that is **restored** — because a
+vehicle is now heading towards its event — comes back to its submitted level
+having waited all along, and with deadlines measured from arrival it is often
+already late. To the autoscaler a waiting job that is already late is a breach
+no capacity avoids, and it runs flat out; each restore also restarts the cloud
+tier's minimum lifetime and the scale-down cooldown. On the verification
+scenario, restores kept the cloud tier at its cap for about 110 cycles longer
+than without intent. `restore: false`, `deadline_from: change` or
+`burst_exempt: [restored]` each remove that, at different costs.
 
 ## What intent knows
 

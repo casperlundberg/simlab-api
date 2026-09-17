@@ -71,6 +71,12 @@ type IntentClass string
 const (
 	ClassDecayed  IntentClass = "decayed"
 	ClassPromoted IntentClass = "promoted"
+
+	// ClassRestored is a job back at the priority it was submitted with after
+	// intent had moved it. With deadlines measured from arrival it is often
+	// already late when it returns — which, to the autoscaler, is a breach no
+	// capacity avoids.
+	ClassRestored IntentClass = "restored"
 )
 
 // The hazard levels intent can be set to act at, weakest first. Named as the
@@ -125,6 +131,12 @@ type IntentSettings struct {
 
 	DeadlineFrom DeadlineOrigin
 
+	// Restore is whether decayed work returns to its submitted priority when
+	// something protected comes within reach of its event. Without it decay is
+	// final: a pure relaxation, at the cost of not protecting anyone who
+	// arrives later than the lookahead could see.
+	Restore bool
+
 	// BurstExempt is which jobs, by what intent did to them, may not be the
 	// reason cloud capacity is bought. They are still served, and still
 	// counted as breaches when late: exemption is a decision to let them be
@@ -151,6 +163,7 @@ func DefaultIntent() IntentSettings {
 		DecayTo:              PriorityFloor,
 		PromoteTo:            PriorityRelocate,
 		DeadlineFrom:         DeadlineFromArrival,
+		Restore:              true,
 		BurstExempt:          []IntentClass{},
 	}
 }
@@ -185,7 +198,7 @@ func (s IntentSettings) Validate() error {
 		oneOf("protect", kind, EntityPerson, EntityCrewedVehicle, EntityAutonomousVehicle)
 	}
 	for _, class := range s.BurstExempt {
-		oneOf("burst_exempt", string(class), string(ClassDecayed), string(ClassPromoted))
+		oneOf("burst_exempt", string(class), string(ClassDecayed), string(ClassPromoted), string(ClassRestored))
 	}
 	if s.Lookahead < 0 {
 		problems = append(problems, fmt.Sprintf("lookahead_seconds must be >= 0, got %v", s.Lookahead.Seconds()))
@@ -249,6 +262,7 @@ type intentWire struct {
 	DecayTo              Priority        `json:"decay_to"`
 	PromoteTo            Priority        `json:"promote_to"`
 	DeadlineFrom         DeadlineOrigin  `json:"deadline_from"`
+	Restore              bool            `json:"restore"`
 	BurstExempt          []IntentClass   `json:"burst_exempt"`
 }
 
@@ -268,7 +282,7 @@ func (s IntentSettings) toWire() intentWire {
 		ProtectLevel: s.ProtectLevel, PromoteLevel: s.PromoteLevel,
 		Margin: s.Margin, LocationUncertainty: s.LocationUncertainty,
 		DecayTo: s.DecayTo, PromoteTo: s.PromoteTo,
-		DeadlineFrom: s.DeadlineFrom, BurstExempt: exempt,
+		DeadlineFrom: s.DeadlineFrom, Restore: s.Restore, BurstExempt: exempt,
 	}
 }
 
@@ -304,7 +318,7 @@ func (s *IntentSettings) UnmarshalJSON(data []byte) error {
 		ProtectLevel: wire.ProtectLevel, PromoteLevel: wire.PromoteLevel,
 		Margin: wire.Margin, LocationUncertainty: wire.LocationUncertainty,
 		DecayTo: wire.DecayTo, PromoteTo: wire.PromoteTo,
-		DeadlineFrom: wire.DeadlineFrom, BurstExempt: wire.BurstExempt,
+		DeadlineFrom: wire.DeadlineFrom, Restore: wire.Restore, BurstExempt: wire.BurstExempt,
 	}
 	return nil
 }

@@ -74,6 +74,16 @@ type eventWork struct {
 type request struct {
 	priority domain.Priority
 	exempt   bool
+
+	// moved is whether intent has ever asked for the job to be somewhere other
+	// than as submitted, which is what makes a job back there restored.
+	moved bool
+}
+
+// displaces reports whether a request leaves a job anywhere other than it was
+// submitted: at another priority, or exempt from cloud burst.
+func (r request) displaces(submitted domain.Priority) bool {
+	return r.priority != submitted || r.exempt
 }
 
 type judgement struct {
@@ -266,29 +276,31 @@ func (p *Planner) request(plan *Plan, i int, at time.Duration, state string) {
 			continue
 		}
 		submitted := p.jobs[id].Priority
-		want := request{priority: submitted}
+		have := p.requested[id]
+		want := request{priority: submitted, moved: have.moved}
 		var class domain.IntentClass
-		switch state {
-		case domain.EventDecayed:
-			if s.DecayTo < submitted {
-				want.priority, class = s.DecayTo, domain.ClassDecayed
-			}
-		case domain.EventPromoted:
-			if s.PromoteTo > submitted {
-				want.priority, class = s.PromoteTo, domain.ClassPromoted
-			}
+		switch {
+		case state == domain.EventDecayed && s.DecayTo < submitted:
+			want.priority, class = s.DecayTo, domain.ClassDecayed
+		case state == domain.EventPromoted && s.PromoteTo > submitted:
+			want.priority, class = s.PromoteTo, domain.ClassPromoted
+		case !s.Restore && s.Mode != domain.IntentOff && have.priority < submitted:
+			// Decay is final: work stays decayed whatever comes near its
+			// event. Switching intent off still puts it back.
+			want.priority, class = have.priority, domain.ClassDecayed
+		case have.moved:
+			class = domain.ClassRestored
 		}
+		want.moved = want.moved || want.priority != submitted
 		want.exempt = class != "" && s.Exempts(class)
 
-		have := p.requested[id]
 		if want == have {
 			continue
 		}
-		asSubmitted := request{priority: submitted}
-		switch {
-		case have == asSubmitted:
+		switch before, after := have.displaces(submitted), want.displaces(submitted); {
+		case !before && after:
 			p.altered++
-		case want == asSubmitted:
+		case before && !after:
 			p.altered--
 		}
 		p.requested[id] = want
@@ -305,7 +317,7 @@ func (p *Planner) close(i int) {
 	event := p.events[i]
 	for k := 0; k < event.picks; k++ {
 		id := event.first + domain.JobID(k)
-		if p.requested[id] != (request{priority: p.jobs[id].Priority}) {
+		if p.requested[id].displaces(p.jobs[id].Priority) {
 			p.altered--
 		}
 	}

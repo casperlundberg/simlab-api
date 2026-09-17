@@ -974,12 +974,22 @@ components:
             promotion can never hide how long a job waited — and a job promoted
             past its new deadline is late at once, which is a reason to scale
             hard unless it is exempt from cloud burst.
+        restore:
+          type: boolean
+          default: true
+          description: |
+            Whether decayed work returns to its submitted priority when
+            something protected comes within reach. Without it decay is final
+            — a pure relaxation. With it and deadlines from arrival, restored
+            work is often already late, which is a reason to scale hard unless
+            it is exempt.
         burst_exempt:
           type: array
-          items: { type: string, enum: [decayed, promoted] }
+          items: { type: string, enum: [decayed, promoted, restored] }
           description: |
             Jobs, by what intent did to them, that may use capacity but may not
-            be the reason cloud capacity is bought. They are still served, and
+            be the reason cloud capacity is bought. Restored is back at its
+            submitted priority after being moved. They are still served, and
             still counted as breaches when late.
 
     IntentStep:
