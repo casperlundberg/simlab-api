@@ -102,8 +102,9 @@ func (m Model) Picks(event Event, sensors []domain.Sensor, jitter time.Duration,
 	return picks
 }
 
-// minimumPicks is four: three coordinates and an unknown origin time.
-const minimumPicks = 4
+// MinimumPicks is four: three coordinates and an unknown origin time. Exported
+// because it is also the moment the mine first has a location for an event.
+const MinimumPicks = 4
 
 // Locate solves for where an event was, from picks alone.
 //
@@ -119,10 +120,10 @@ func (m Model) Locate(sensors []domain.Sensor, picks []Pick, within domain.Exten
 	if m.PVelocitySeconds <= 0 {
 		return Estimate{}, fmt.Errorf("the velocity model has no velocity")
 	}
-	if len(picks) < minimumPicks {
+	if len(picks) < MinimumPicks {
 		return Estimate{}, fmt.Errorf(
 			"locating in three dimensions needs at least %d picks and an origin time to solve for; got %d",
-			minimumPicks, len(picks))
+			MinimumPicks, len(picks))
 	}
 
 	positions := make(map[string]domain.Point, len(sensors))
@@ -144,10 +145,10 @@ func (m Model) Locate(sensors []domain.Sensor, picks []Pick, within domain.Exten
 		}
 		observations = append(observations, observation{at: pick.At.Seconds(), sensor: at})
 	}
-	if len(observations) < minimumPicks {
+	if len(observations) < MinimumPicks {
 		return Estimate{}, fmt.Errorf(
 			"only %d of %d picks came from sensors in the layout, which is fewer than the %d needed",
-			len(observations), len(picks), minimumPicks)
+			len(observations), len(picks), MinimumPicks)
 	}
 
 	// residual returns the RMS arrival-time error for a candidate position,
@@ -218,10 +219,20 @@ func (m Model) Locate(sensors []domain.Sensor, picks []Pick, within domain.Exten
 // this means anything, and inventing them at generation time keeps every
 // existing scenario working.
 //
-// Placement is stratified rather than uniformly random: sensors are spread
-// across cells of the extent and jittered within them. A purely random array
-// clumps, and a clumped array locates badly in the directions it does not
-// cover — which would make the solver look worse than the physics deserves.
+// Placement is a Latin hypercube: each axis is cut into as many slabs as there
+// are sensors, and every slab along every axis gets exactly one. That is what
+// guarantees the array reaches every depth, easting and northing of the mine.
+// Filling a regular grid cell by cell was the first version, and it stopped
+// wherever the count ran out — forty sensors in a 4x4x4 grid covered three
+// quarters of the mine and left the far end with nothing near enough to locate
+// an event there.
+//
+// A single hypercube can still clump in three dimensions, and a clumped array
+// locates badly in the directions it does not cover, which would make the
+// solver look worse than the physics deserves. So several are drawn and the
+// one whose closest pair of sensors is furthest apart is kept.
+//
+// A nil source uses a fixed one, so the result is still reproducible.
 func Layout(extent domain.Extent, count int, random *rand.Rand) domain.Layout {
 	if count < 0 {
 		count = 0
@@ -230,38 +241,62 @@ func Layout(extent domain.Extent, count int, random *rand.Rand) domain.Layout {
 	if count == 0 {
 		return layout
 	}
+	if random == nil {
+		random = rand.New(rand.NewPCG(1, 1))
+	}
 
-	// Cells per axis: the cube root of the count, so the array spreads in all
-	// three dimensions rather than forming a plane.
-	perAxis := int(math.Ceil(math.Cbrt(float64(count))))
-	spanX, spanY, spanZ := extent.Span()
-	stepX, stepY, stepZ := spanX/float64(perAxis), spanY/float64(perAxis), spanZ/float64(perAxis)
+	const candidates = 16
 
-	placed := 0
-	for i := 0; i < perAxis && placed < count; i++ {
-		for j := 0; j < perAxis && placed < count; j++ {
-			for k := 0; k < perAxis && placed < count; k++ {
-				at := extent.Clamp(domain.Point{
-					X: extent.Min.X + (float64(i)+jitter(random))*stepX,
-					Y: extent.Min.Y + (float64(j)+jitter(random))*stepY,
-					Z: extent.Min.Z + (float64(k)+jitter(random))*stepZ,
-				})
-				layout.Sensors = append(layout.Sensors, domain.Sensor{
-					ID: fmt.Sprintf("s%02d", placed+1),
-					At: at,
-				})
-				placed++
-			}
+	var best []domain.Point
+	bestSeparation := -1.0
+	for c := 0; c < candidates; c++ {
+		points := hypercube(extent, count, random)
+		if separation := closestPair(points); separation > bestSeparation {
+			best, bestSeparation = points, separation
 		}
+	}
+
+	for i, at := range best {
+		layout.Sensors = append(layout.Sensors, domain.Sensor{
+			ID: fmt.Sprintf("s%02d", i+1),
+			At: at,
+		})
 	}
 	return layout
 }
 
-// jitter is a position within a cell, kept away from the faces so two sensors
-// in neighbouring cells do not end up on top of each other.
-func jitter(random *rand.Rand) float64 {
-	if random == nil {
-		return 0.5
+// hypercube draws one Latin hypercube design of count points inside extent.
+func hypercube(extent domain.Extent, count int, random *rand.Rand) []domain.Point {
+	spanX, spanY, spanZ := extent.Span()
+	xs, ys, zs := random.Perm(count), random.Perm(count), random.Perm(count)
+
+	// A position within slab, kept away from its faces so two sensors in
+	// neighbouring slabs do not end up on top of each other.
+	within := func(slab int) float64 {
+		return (float64(slab) + 0.25 + random.Float64()*0.5) / float64(count)
 	}
-	return 0.25 + random.Float64()*0.5
+
+	points := make([]domain.Point, count)
+	for i := range points {
+		points[i] = extent.Clamp(domain.Point{
+			X: extent.Min.X + within(xs[i])*spanX,
+			Y: extent.Min.Y + within(ys[i])*spanY,
+			Z: extent.Min.Z + within(zs[i])*spanZ,
+		})
+	}
+	return points
+}
+
+// closestPair is the smallest distance between any two points, or +Inf for
+// fewer than two.
+func closestPair(points []domain.Point) float64 {
+	closest := math.Inf(1)
+	for i := range points {
+		for j := i + 1; j < len(points); j++ {
+			if d := points[i].DistanceTo(points[j]); d < closest {
+				closest = d
+			}
+		}
+	}
+	return closest
 }

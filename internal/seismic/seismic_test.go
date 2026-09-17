@@ -181,3 +181,38 @@ func TestEverySensorIsInsideTheMine(t *testing.T) {
 		}
 	}
 }
+
+// Stratification only helps if the strata cover the mine. Filling grid cells
+// in order stops wherever the count runs out, so forty sensors in a 4x4x4 grid
+// used to occupy the first three quarters of the X axis and leave the far end
+// of the mine with nothing near enough to locate an event there.
+func TestAnArraySpansTheWholeMineWhateverTheCount(t *testing.T) {
+	for _, count := range []int{9, 30, 40, 50} {
+		l := seismic.Layout(mine(), count, rand.New(rand.NewPCG(6, 6)))
+		if len(l.Sensors) != count {
+			t.Fatalf("%d sensors requested, %d placed", count, len(l.Sensors))
+		}
+
+		spanX, spanY, spanZ := mine().Span()
+		for _, axis := range []struct {
+			name      string
+			min, span float64
+			of        func(domain.Point) float64
+		}{
+			{"X", mine().Min.X, spanX, func(p domain.Point) float64 { return p.X }},
+			{"Y", mine().Min.Y, spanY, func(p domain.Point) float64 { return p.Y }},
+			{"Z", mine().Min.Z, spanZ, func(p domain.Point) float64 { return p.Z }},
+		} {
+			low, high := false, false
+			for _, sensor := range l.Sensors {
+				fraction := (axis.of(sensor.At) - axis.min) / axis.span
+				low = low || fraction < 0.3
+				high = high || fraction > 0.7
+			}
+			if !low || !high {
+				t.Errorf("%d sensors: nothing in the %s of the mine along %s",
+					count, map[bool]string{true: "far end", false: "near end"}[low], axis.name)
+			}
+		}
+	}
+}
