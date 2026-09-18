@@ -107,6 +107,32 @@ const (
 	stationScatter = 0.3
 )
 
+// Stage is which step of the mine's workflow a job belongs to: a seismogram is
+// picked, an associate sweep groups the picks that are ready, and each group is
+// located.
+//
+// StagePick is the zero value deliberately. Every scenario recorded before the
+// pipeline existed generates picks and nothing else, so those workloads keep
+// their meaning — and their pinned job-stream digests — untouched.
+type Stage uint8
+
+const (
+	StagePick Stage = iota
+	StageAssociate
+	StageLocate
+)
+
+func (s Stage) String() string {
+	switch s {
+	case StageAssociate:
+		return "associate"
+	case StageLocate:
+		return "locate"
+	default:
+		return "pick"
+	}
+}
+
 // Job is one unit of work arriving at the queue.
 type Job struct {
 	// ID is this job's identity within the run, so the mine can direct intent
@@ -122,10 +148,17 @@ type Job struct {
 	// Seconds is how long this job occupies an executor.
 	Seconds float64
 
-	// Event is the index, into Workload.Events, of the event this job is a
-	// pick of.
+	// Event is the index, into Workload.Events, of the event this job belongs
+	// to. An associate sweep serves many events at once and carries NoEvent.
 	Event int
+
+	// Stage is which step of the workflow this job is.
+	Stage Stage
 }
+
+// NoEvent is the Event of a job that belongs to no single event: an associate
+// sweep groups whatever is ready, which is generally several.
+const NoEvent = -1
 
 // Workload is everything a scenario generates: the jobs a run replays, and the
 // mine they came from.

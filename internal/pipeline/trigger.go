@@ -9,8 +9,16 @@
 // Celery disagree about dependencies far more than they disagree about
 // priority.
 //
-// Everything here is pure: given a time and an observation, decide. No I/O, no
-// clock, no randomness, so a scenario replays identically.
+// The shape of the workflow is measured rather than assumed. Every locate in
+// the operational extract was submitted inside an associate sweep's own
+// execution, a sweep's cost follows how many locates it emits, and the sweep
+// reads a 30-minute sliding window — see platform-experiments
+// docs/workflow-inference.md, which also says what the extract cannot settle.
+//
+// A trigger is pure: given a time and an observation, decide. Nothing here
+// reads a clock or does I/O, and the only randomness is the injected source
+// that spreads the durations of the work Pipeline submits, so a scenario
+// replays identically.
 package pipeline
 
 import (
