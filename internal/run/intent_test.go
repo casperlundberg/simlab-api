@@ -39,9 +39,15 @@ func TestDecayMovesWorkAndTheRunRecordsWhatItDid(t *testing.T) {
 		}
 		if cycle.Intent.Decayed > 0 {
 			decayed = true
-			if cycle.SubmittedDepths[domain.PriorityFloor] == cycle.Queues[domain.PriorityFloor].Depth {
-				t.Errorf("cycle %d: %d decayed jobs waiting, but the floor holds what was submitted there",
-					cycle.Sequence, cycle.Intent.Decayed)
+			// Decayed work waits below every level anything was submitted at,
+			// so that it queues behind the work of the events intent kept.
+			if cycle.Queues[domain.PriorityBelowFloor].Depth != cycle.Intent.Decayed {
+				t.Errorf("cycle %d: %d decayed jobs waiting, but P%d holds %d",
+					cycle.Sequence, cycle.Intent.Decayed, domain.PriorityBelowFloor,
+					cycle.Queues[domain.PriorityBelowFloor].Depth)
+			}
+			if _, submitted := cycle.SubmittedDepths[domain.PriorityBelowFloor]; submitted {
+				t.Errorf("cycle %d: work was submitted below the floor, which is intent's own level", cycle.Sequence)
 			}
 		}
 		if cycle.Intent.Promoted > 0 {

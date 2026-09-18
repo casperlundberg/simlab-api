@@ -126,6 +126,14 @@ type IntentSettings struct {
 
 	// DecayTo and PromoteTo are the levels work is moved to. Decay never
 	// raises a job and promotion never lowers one.
+	//
+	// DecayTo belongs below every level work is submitted at. Sharing a level
+	// with submitted work puts relaxed work in front of the work of the very
+	// events intent chose to protect: on a job mix taken from an operational
+	// catalogue, where a quarter of jobs arrive at priority 0, decaying to 0
+	// left events that truly exposed someone finishing five to seven times
+	// slower than decaying below it (platform-experiments
+	// reports/scenario-shapes).
 	DecayTo   Priority
 	PromoteTo Priority
 
@@ -167,7 +175,7 @@ func DefaultIntent() IntentSettings {
 		PromoteLevel:         "high",
 		Margin:               0,
 		LocationUncertainty:  50,
-		DecayTo:              PriorityFloor,
+		DecayTo:              PriorityBelowFloor,
 		PromoteTo:            PriorityRelocate,
 		DeadlineFrom:         DeadlineFromArrival,
 		Restore:              true,

@@ -963,7 +963,14 @@ components:
         promote_level: { type: string, enum: [moderate, high, very-high], default: high }
         margin_m: { type: number, default: 0, description: Metres added to every reach. }
         location_uncertainty_m: { type: number, default: 50, description: How far a location may be out; zones are widened by it. }
-        decay_to: { type: integer, default: 0, description: The level decayed work moves to. Decay never raises a job. }
+        decay_to:
+          type: integer
+          default: -1
+          description: |
+            The level decayed work moves to. Decay never raises a job. It
+            belongs below every level work is submitted at: sharing a level
+            with submitted work puts relaxed work in front of the work of the
+            events intent chose to protect.
         promote_to: { type: integer, default: 400, description: The level promoted work moves to. Promotion never lowers one. }
         deadline_from:
           type: string

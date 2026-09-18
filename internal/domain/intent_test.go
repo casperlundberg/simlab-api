@@ -18,6 +18,9 @@ func TestTheDefaultIntentDecaysOnlyAndIsValid(t *testing.T) {
 	if s.Mode != domain.IntentDecay || s.Mode.Promotes() || !s.Mode.Decays() {
 		t.Errorf("Mode = %q, want decay only", s.Mode)
 	}
+	if s.DecayTo >= domain.PriorityFloor {
+		t.Errorf("DecayTo = %d, want a level below everything work is submitted at", s.DecayTo)
+	}
 	if s.Knowledge != domain.KnowledgeEstimate {
 		t.Errorf("Knowledge = %q, want the mine's estimates, never the truth, by default", s.Knowledge)
 	}

@@ -3,6 +3,21 @@
 Every release, newest first. `make release` will not tag a version without a
 section here, so the tag message and this file always agree.
 
+## 3.0.0 — 2026-09-18
+
+MAJOR: a run created without stating `decay_to` decays to a different level, so
+a recorded result for an unchanged scenario can change.
+
+- **Decayed work goes below everything submitted** (`decay_to` defaults to −1,
+  was 0). Sharing a level with submitted work put relaxed work in front of the
+  low-priority picks of the events intent had kept. On a job mix calibrated to
+  an operational catalogue — a quarter of it submitted at priority 0 — events
+  that truly exposed someone finished five to seven times sooner once decay had
+  a level of its own: 760 s against 2,151 s on a normal day, 1,767 s against
+  9,047 s with a rock burst, and 7,154 s against 46,657 s with a medium
+  earthquake (platform-experiments `reports/scenario-shapes`).
+- `domain.PriorityBelowFloor` names that level.
+
 ## 2.0.1 — 2026-09-17
 
 - Intent skips judging an event whose judgement cannot have changed: nothing

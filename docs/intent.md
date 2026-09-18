@@ -35,7 +35,7 @@ every protected route.
 | `promote_level` | `high` | An event whose zone at this level reaches a path can be **promoted**. |
 | `location_uncertainty_m` | 50 | Widens every zone from a location. |
 | `margin_m` | 0 | Widens every reach further. |
-| `decay_to`, `promote_to` | 0, 400 | Where work moves. Decay never raises a job; promotion never lowers one. |
+| `decay_to`, `promote_to` | −1, 400 | Where work moves. Decay never raises a job; promotion never lowers one. |
 | `knowledge` | `estimate` | The mine's locations, or `truth` — the oracle arm. |
 | `pre_location` | false | Act before a location, from the first sensor to trigger. |
 | `pre_location_magnitude` | 1.5 | The magnitude assumed before one is estimated. |
@@ -54,6 +54,14 @@ tier's minimum lifetime and the scale-down cooldown. On the verification
 scenario, restores kept the cloud tier at its cap for about 110 cycles longer
 than without intent. `restore: false`, `deadline_from: change` or
 `burst_exempt: [restored]` each remove that, at different costs.
+
+`decay_to` belongs **below every level work is submitted at**. It shares a
+level with submitted work otherwise, and relaxed work then queues in front of
+the low-priority picks of the very events intent kept: on a job mix taken from
+an operational catalogue, where a quarter of jobs arrive at priority 0,
+decaying to 0 left events that truly exposed someone finishing five to seven
+times slower than decaying below it. A mix that submits work below 0 needs
+`decay_to` moved down to match.
 
 ## What intent knows
 

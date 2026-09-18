@@ -34,6 +34,11 @@ const (
 	PriorityLocate    Priority = 50
 	PriorityPick      Priority = 25
 	PriorityFloor     Priority = 0
+
+	// PriorityBelowFloor is beneath every level work is submitted at, and is
+	// where intent decays work to: relaxed work has to queue behind work that
+	// arrived at the floor, not in front of it.
+	PriorityBelowFloor Priority = -1
 )
 
 // Mine is a site being modelled.

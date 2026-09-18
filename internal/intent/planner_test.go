@@ -154,7 +154,7 @@ func TestAnEventReachingNoProtectedPathIsDecayedOnceItIsLocated(t *testing.T) {
 		switch {
 		case k < seismic.MinimumPicks && ok:
 			t.Errorf("job %d was already processed and was moved anyway", id)
-		case k >= seismic.MinimumPicks && (!ok || u.Priority != domain.PriorityFloor):
+		case k >= seismic.MinimumPicks && (!ok || u.Priority != domain.PriorityBelowFloor):
 			t.Errorf("job %d of the far event: update %+v, want it decayed to the floor", id, u)
 		}
 	}
@@ -319,7 +319,7 @@ func TestBothPromotesWhatPutsSomeoneAtHighRiskAndDecaysWhatReachesNoOne(t *testi
 	plan := p.Plan(30 * time.Second)
 
 	for event, want := range map[int]domain.Priority{
-		nearEvent: domain.PriorityRelocate, middleEvent: domain.PriorityLocate, farEvent: domain.PriorityFloor,
+		nearEvent: domain.PriorityRelocate, middleEvent: domain.PriorityLocate, farEvent: domain.PriorityBelowFloor,
 	} {
 		for _, id := range jobsOf(w, event) {
 			got := domain.PriorityLocate
@@ -379,7 +379,7 @@ func TestUpdatesCarryExemptionAndTheDeadlineOrigin(t *testing.T) {
 		`{"mode":"both","knowledge":"truth","burst_exempt":["decayed"],"deadline_from":"change"}`))
 
 	for _, u := range p.Plan(30 * time.Second).Updates {
-		decayed := u.Priority == domain.PriorityFloor
+		decayed := u.Priority == domain.PriorityBelowFloor
 		if u.BurstExempt != decayed {
 			t.Errorf("update %+v: exempt = %v, want exemption for decayed work only", u, u.BurstExempt)
 		}
@@ -403,7 +403,7 @@ func TestChangingOnlyExemptionUpdatesTheJobsItApplesTo(t *testing.T) {
 		t.Fatalf("Plan() = %d updates, want the far event's %d", len(plan.Updates), len(w.Events[farEvent].Picks))
 	}
 	for _, u := range plan.Updates {
-		if !u.BurstExempt || u.Priority != domain.PriorityFloor {
+		if !u.BurstExempt || u.Priority != domain.PriorityBelowFloor {
 			t.Errorf("update %+v, want the same decay, now exempt", u)
 		}
 	}
