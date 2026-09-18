@@ -8,6 +8,7 @@
 package queue
 
 import (
+	"fmt"
 	"math"
 	"sort"
 	"time"
@@ -106,6 +107,16 @@ type Simulator struct {
 	arrivals []workload.Job
 	next     int
 
+	// submitted work is what the mine handed over while the run was in
+	// flight, which is how the pipeline's own stages arrive: a locate does not
+	// exist until an associate sweep says so.
+	//
+	// Kept as a second stream rather than spliced into arrivals, because
+	// splicing into a sorted slice costs a copy of its tail per submission and
+	// a run submits thousands of times.
+	submittedWork []workload.Job
+	nextSubmitted int
+
 	// levels is the waiting work, FIFO within each priority.
 	levels map[domain.Priority][]*queued
 
@@ -196,29 +207,72 @@ func (s *Simulator) Advance(to time.Duration, executors int) Progress {
 	return progress
 }
 
+// Submit hands the queue work that did not exist when the run began.
+//
+// This is how the mine's own workflow arrives: an associate sweep groups what
+// is ready and submits a locate for each group, so the locate's deadline runs
+// from the moment the sweep produced it rather than from the start of the run.
+func (s *Simulator) Submit(jobs ...workload.Job) error {
+	for _, job := range jobs {
+		if _, taken := s.jobs[job.ID]; taken {
+			return fmt.Errorf("job %d cannot be submitted: a job with that identity is already "+
+				"in the queue, and identity is how intent and completions are attributed", job.ID)
+		}
+		for _, pending := range s.submittedWork[s.nextSubmitted:] {
+			if pending.ID == job.ID {
+				return fmt.Errorf("job %d cannot be submitted twice", job.ID)
+			}
+		}
+		if job.SubmittedAt < s.now {
+			// Admitting it late would give it a deadline that had already
+			// started running somewhere the queue never saw it.
+			job.SubmittedAt = s.now
+		}
+		s.submittedWork = append(s.submittedWork, job)
+	}
+	// Submissions are made as a run advances, so they arrive in time order
+	// already; this only guards a caller that batches them out of order.
+	sort.SliceStable(s.submittedWork[s.nextSubmitted:], func(i, j int) bool {
+		return s.submittedWork[s.nextSubmitted+i].SubmittedAt <
+			s.submittedWork[s.nextSubmitted+j].SubmittedAt
+	})
+	return nil
+}
+
 // admitArrivals moves everything submitted by now into the waiting queues.
 func (s *Simulator) admitArrivals(to time.Duration) {
 	for s.next < len(s.arrivals) && s.arrivals[s.next].SubmittedAt <= to {
-		job := s.arrivals[s.next]
-		item := &queued{
-			job: job, remaining: job.Seconds, submitted: job.Priority,
-			deadlineFrom: job.SubmittedAt, waiting: true,
-		}
-		s.levels[job.Priority] = append(s.levels[job.Priority], item)
-		s.jobs[job.ID] = item
-		s.recent = append(s.recent, job.SubmittedAt)
-		s.submitted++
+		s.admit(s.arrivals[s.next])
 		s.next++
+	}
+	for s.nextSubmitted < len(s.submittedWork) && s.submittedWork[s.nextSubmitted].SubmittedAt <= to {
+		s.admit(s.submittedWork[s.nextSubmitted])
+		s.nextSubmitted++
 	}
 
 	// Trim the arrival-rate window from the front; it is ordered, so this is
-	// cheap however long the run gets.
+	// cheap however long the run gets. Submitted work is appended out of
+	// order relative to the static log, so the window is re-sorted before it
+	// is trimmed from the front.
+	sort.Slice(s.recent, func(i, j int) bool { return s.recent[i] < s.recent[j] })
 	cutoff := to - s.arrivalWindow
 	drop := 0
 	for drop < len(s.recent) && s.recent[drop] < cutoff {
 		drop++
 	}
 	s.recent = s.recent[drop:]
+}
+
+// admit puts one job into its level and starts its deadline running.
+func (s *Simulator) admit(job workload.Job) {
+	item := &queued{
+		job: job, remaining: job.Seconds, submitted: job.Priority,
+		deadlineFrom: job.SubmittedAt, waiting: true,
+	}
+	s.levels[job.Priority] = append(s.levels[job.Priority], item)
+	s.jobs[job.ID] = item
+	s.recent = append(s.recent, job.SubmittedAt)
+	s.submitted++
 }
 
 // serve spends the interval's executor time on work, highest priority first.
@@ -517,7 +571,8 @@ func (s *Simulator) recentArrivalsByLevel() map[domain.Priority]float64 {
 
 // Done reports whether everything has arrived and been served.
 func (s *Simulator) Done() bool {
-	return s.next >= len(s.arrivals) && s.depth() == 0 && len(s.running) == 0
+	return s.next >= len(s.arrivals) && s.nextSubmitted >= len(s.submittedWork) &&
+		s.depth() == 0 && len(s.running) == 0
 }
 
 // Stats is the run's totals.
