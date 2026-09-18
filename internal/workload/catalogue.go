@@ -36,6 +36,20 @@ type Catalogue struct {
 
 	processed []int
 	events    []domain.SeismicEvent
+
+	// deferred is whether the mine runs a locate stage of its own. Without
+	// one, an event is located as soon as it has the picks to solve for it;
+	// with one, having the picks only means a locate *can* be run, and the
+	// location exists when that job finishes. The difference is time an
+	// operator spends waiting, which is the thing worth measuring.
+	deferred bool
+}
+
+// Deferred makes locating explicit: Observe records picks and nothing more, and
+// Locate says when an event's locate job finished.
+func (c *Catalogue) Deferred() *Catalogue {
+	c.deferred = true
+	return c
 }
 
 // NewCatalogue starts a catalogue for a workload with nothing processed.
@@ -140,22 +154,55 @@ func (c *Catalogue) Observe(at time.Duration, finished []domain.JobID) ([]domain
 		record := &c.events[i]
 		picks := len(c.workload.Events[i].Picks)
 
-		if record.LocatedAt == nil && c.processed[i] >= seismic.MinimumPicks {
-			if location, ok := c.locate(i, at); ok {
-				when := at
-				record.LocatedAt, record.Located = &when, location
-			}
-		}
 		if record.ProcessedAt == nil && c.processed[i] == picks {
 			when := at
 			record.ProcessedAt = &when
-			if location, ok := c.locate(i, at); ok {
-				record.Final = location
-			}
+		}
+		if !c.deferred {
+			c.solve(i, at)
 		}
 		changed = append(changed, snapshot(*record))
 	}
 	return changed, nil
+}
+
+// Locate records that each event's locate job finished at at, and returns those
+// events as they now stand.
+//
+// A locate solves from the picks processed by the time it ran, so one that ran
+// before four of them arrived produces nothing — as the real job would.
+func (c *Catalogue) Locate(at time.Duration, events []int) ([]domain.SeismicEvent, error) {
+	changed := make([]domain.SeismicEvent, 0, len(events))
+	for _, i := range events {
+		if i < 0 || i >= len(c.events) {
+			return nil, fmt.Errorf("a locate finished for event %d, which the mine never detected "+
+				"(it detected events 0 to %d)", i, len(c.events)-1)
+		}
+		c.solve(i, at)
+		changed = append(changed, snapshot(c.events[i]))
+	}
+	return changed, nil
+}
+
+// solve puts a location on event i from the picks processed so far: its first,
+// which is when an operator first had somewhere to point, and its final one
+// once every pick has been processed.
+func (c *Catalogue) solve(i int, at time.Duration) {
+	record := &c.events[i]
+	if c.processed[i] < seismic.MinimumPicks {
+		return
+	}
+	location, ok := c.locate(i, at)
+	if !ok {
+		return
+	}
+	if record.LocatedAt == nil {
+		when := at
+		record.LocatedAt, record.Located = &when, location
+	}
+	if c.processed[i] == len(c.workload.Events[i].Picks) {
+		record.Final = location
+	}
 }
 
 // locate solves for event i from the picks processed so far, and judges who
