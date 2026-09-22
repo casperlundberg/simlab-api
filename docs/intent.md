@@ -8,9 +8,11 @@ using what it knows about that to reorder work it has already queued.
 ## What is protected
 
 The protected volume is the union, over every protected person and vehicle, of
-where each was when the event happened, where it is now, and where its planned
-route takes it over the **lookahead**. An event threatens that volume when the
-ground motion it can cause reaches it.
+where each was when the event happened, where it is now, and where it is or
+could be over the **lookahead**: a vehicle along the route the fleet system has
+planned for it, a person anywhere along the tunnels they could walk to in that
+time. An event threatens that volume when the ground motion it can cause
+reaches it.
 
 Where people were when an event happened counts because an event that shook
 someone is worth locating after they have walked away: its location is where
@@ -22,15 +24,15 @@ Ground motion comes from the Canadian Rockburst Support Handbook's scaling law
 hypocentre and rising √10-fold per unit of magnitude, with R three-dimensional.
 For a level of ground motion — moderate above 0.01 m/s, high above 0.1, very
 high above 1 — that law gives a radius, widened by how far the location may be
-out. So an event threatens a path when the path passes within that radius:
-spheres around the event, or equivalently, spheres of that radius swept along
-every protected route.
+out. So an event threatens protected ground when the ground passes within that
+radius: spheres around the event, or equivalently, spheres of that radius swept
+along every protected route and every stretch of tunnel a person could reach.
 
 | Setting | Default | What it decides |
 |---|---|---|
 | `mode` | `decay` | `off`, `decay`, `promote` or `both`. |
 | `protect` | all three kinds | Which people and vehicles count. |
-| `lookahead_seconds` | 300 | How far along its route an entity is protected. 0 is where it is now. |
+| `lookahead_seconds` | 300 | How far ahead a unit is protected: along a vehicle's route, and as far as a person could walk. 0 is where it is now. |
 | `protect_level` | `moderate` | An event whose zone at this level reaches no path **decays**. |
 | `promote_level` | `high` | An event whose zone at this level reaches a path can be **promoted**. |
 | `location_uncertainty_m` | 50 | Widens every zone from a location. |
@@ -78,9 +80,17 @@ allowance, from the moment they happen. No real mine has this; it bounds what
 ordering by location could achieve. Nothing under `estimate` reads the truth,
 and `TestUnderEstimatesIntentNeverReadsTheTruth` holds that.
 
-Planned movement is taken as known over the lookahead: autonomous haulage runs
-to a dispatch plan, and crews to work assignments. That is an assumption about
-how well a mine knows its own plans, and the lookahead is the dial for it.
+What the mine knows of where its people and vehicles are comes from
+`internal/observe`, never from the simulator's tracks. Everyone underground
+carries a device positioned over the mine's network, and each vehicle's
+positioning places it in its drift, so every unit's position now is known
+exactly. The fleet system knows each vehicle's planned route; nobody knows the
+route a person will walk. So a vehicle is protected along its route over the
+lookahead, and a person along every stretch of tunnel they could walk to in it
+(at 1 m/s, along the tunnels — not a sphere, which would reach through the rock
+to the level above). The oracle arm, `truth`, reads the simulator's tracks for
+everyone, which is the foresight no mine has; before 4.0.0 the estimate arm
+read them too.
 
 ## What moves, and when
 

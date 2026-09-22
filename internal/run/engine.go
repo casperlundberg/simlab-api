@@ -21,6 +21,7 @@ import (
 	"github.com/casperlundberg/simlab-api/internal/buildinfo"
 	"github.com/casperlundberg/simlab-api/internal/domain"
 	"github.com/casperlundberg/simlab-api/internal/intent"
+	"github.com/casperlundberg/simlab-api/internal/observe"
 	"github.com/casperlundberg/simlab-api/internal/pipeline"
 	"github.com/casperlundberg/simlab-api/internal/queue"
 	"github.com/casperlundberg/simlab-api/internal/workload"
@@ -249,7 +250,13 @@ func (e *Engine) simulate(ctx context.Context, spec Spec) (domain.Metrics, error
 	if control == nil {
 		control = intent.NewControl(runIntent.Settings)
 	}
-	intents := newIntentLoop(runIntent, control, intent.New(generated, catalogue, runIntent.Settings))
+	// What the planner may know of where people and vehicles are: what the
+	// mine's own systems read, and the simulator's truth for the oracle arm.
+	views := intent.Views{
+		Mine:   observe.NewPositioned(generated.Entities, generated.Layout.Tunnels, workload.WalkingSpeed),
+		Oracle: observe.NewTracks(generated.Entities),
+	}
+	intents := newIntentLoop(runIntent, control, intent.New(generated, catalogue, runIntent.Settings, views))
 	interval := spec.Run.DecisionInterval
 	start := spec.Run.SimulatedStart
 	if start.IsZero() {

@@ -25,7 +25,7 @@ var defaultWorkforce = domain.Workforce{People: 8, CrewedVehicles: 4, Autonomous
 // light vehicles, and 12 km/h for a loaded autonomous hauler, which is held
 // below what a driver would do.
 const (
-	walkingSpeed    = 1.0
+	WalkingSpeed    = 1.0
 	crewedSpeed     = 15.0 / 3.6
 	autonomousSpeed = 12.0 / 3.6
 )
@@ -48,7 +48,7 @@ func workforce(layout domain.Layout, scenario domain.Scenario) []domain.Entity {
 
 	// Nobody travels the hoisting shaft: people ride a cage, which is not a
 	// place anyone is exposed for long, and vehicles cannot use it at all.
-	graph := mineplan.NewGraph(layout.Tunnels, func(t domain.Tunnel) bool { return t.Kind != mineplan.Shaft })
+	graph := mineplan.NewGraph(layout.Tunnels, mineplan.Walkable)
 	if graph.Nodes() == 0 {
 		return []domain.Entity{}
 	}
@@ -134,7 +134,7 @@ func newMovement(graph *mineplan.Graph, layout domain.Layout, until time.Duratio
 // person walks between working places on one level, staying a while at each.
 func (m *movement) person(random *rand.Rand) []domain.Waypoint {
 	start := m.workplaces[random.IntN(len(m.workplaces))]
-	return m.travel(start, walkingSpeed, random, func(at int) (int, time.Duration) {
+	return m.travel(start, WalkingSpeed, random, func(at int) (int, time.Duration) {
 		level := m.byLevel[m.graph.Point(at).Z]
 		// Now and then a person moves to another level; mostly they stay on
 		// the one they were sent to.
@@ -197,13 +197,27 @@ func (m *movement) travel(start int, speed float64, random *rand.Rand,
 	return track
 }
 
+// trackSteps is how many steps a metre of track is rounded to.
+const trackSteps = 10
+
+// TrackResolution is what a waypoint is rounded to, in metres, in each axis. A
+// point on a track can so lie up to half a step off the tunnel in each axis —
+// at most TrackResolution·√3/2 — which anything comparing tracks with the
+// tunnels themselves has to allow for.
+const TrackResolution = 1.0 / trackSteps
+
+// TrackTick is what a waypoint's time is rounded to. A unit can so reach a
+// point up to half a tick early or late, which at walking pace is a few
+// centimetres of ground.
+const TrackTick = 100 * time.Millisecond
+
 // waypoint rounds to a tenth of a second and a tenth of a metre: finer than
 // anything the view or a safety distance can use, and it keeps a day of
 // tracks a fraction of the size.
 func waypoint(at time.Duration, p domain.Point) domain.Waypoint {
-	round := func(v float64) float64 { return math.Round(v*10) / 10 }
+	round := func(v float64) float64 { return math.Round(v*trackSteps) / trackSteps }
 	return domain.Waypoint{
-		At:    at.Round(100 * time.Millisecond),
+		At:    at.Round(TrackTick),
 		Point: domain.Point{X: round(p.X), Y: round(p.Y), Z: round(p.Z)},
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/casperlundberg/simlab-api/internal/domain"
+	"github.com/casperlundberg/simlab-api/internal/observe"
 	"github.com/casperlundberg/simlab-api/internal/workload"
 )
 
@@ -32,7 +33,7 @@ func TestSkippingSettledEventsDecidesExactlyWhatJudgingEverythingDoes(t *testing
 
 	settings := domain.DefaultIntent()
 	settings.Mode = domain.IntentBoth
-	quick, thorough := New(built, workload.NewCatalogue(built), settings), New(built, workload.NewCatalogue(built), settings)
+	quick, thorough := New(built, workload.NewCatalogue(built), settings, truthful(built)), New(built, workload.NewCatalogue(built), settings, truthful(built))
 	thorough.alwaysJudge = true
 
 	// The two catalogues are told about the same work at the same moments, so
@@ -93,4 +94,11 @@ func TestSkippingSettledEventsDecidesExactlyWhatJudgingEverythingDoes(t *testing
 		t.Fatal("nothing was ever moved, so this compared two planners doing nothing")
 	}
 	t.Logf("%d updates over 1000 cycles", changed)
+}
+
+// truthful gives the planner the true tracks as the mine's view, so a test of
+// the planner's own logic is not also a test of what a mine can read.
+func truthful(w workload.Workload) Views {
+	tracks := observe.NewTracks(w.Entities)
+	return Views{Mine: tracks, Oracle: tracks}
 }

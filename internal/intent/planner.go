@@ -6,6 +6,7 @@ import (
 
 	"github.com/casperlundberg/simlab-api/internal/domain"
 	"github.com/casperlundberg/simlab-api/internal/hazard"
+	"github.com/casperlundberg/simlab-api/internal/observe"
 	"github.com/casperlundberg/simlab-api/internal/orchestrator"
 	"github.com/casperlundberg/simlab-api/internal/seismic"
 	"github.com/casperlundberg/simlab-api/internal/workload"
@@ -42,7 +43,7 @@ type Sighting struct {
 type Planner struct {
 	jobs      []workload.Job
 	events    []eventWork
-	entities  []domain.Entity
+	views     Views
 	catalogue *workload.Catalogue
 	settings  domain.IntentSettings
 
@@ -142,8 +143,18 @@ type Plan struct {
 	Transitions []Transition
 }
 
+// Views is what the planner may know about where people and vehicles are:
+// the mine's own reading, and the simulator's truth, which only the oracle arm
+// (knowledge "truth") decides from. Both are kept because knowledge can change
+// while a run is in flight. Which implementations they are is decided where the
+// run is wired; the planner knows them only as observe.Whereabouts.
+type Views struct {
+	Mine   observe.Whereabouts
+	Oracle observe.Whereabouts
+}
+
 // New prepares a planner for a workload, with nothing asked for yet.
-func New(w workload.Workload, catalogue *workload.Catalogue, settings domain.IntentSettings) *Planner {
+func New(w workload.Workload, catalogue *workload.Catalogue, settings domain.IntentSettings, views Views) *Planner {
 	sensors := map[string]domain.Point{}
 	for _, sensor := range w.Layout.Sensors {
 		sensors[sensor.ID] = sensor.At
@@ -151,15 +162,17 @@ func New(w workload.Workload, catalogue *workload.Catalogue, settings domain.Int
 
 	p := &Planner{
 		jobs:       w.Jobs,
-		entities:   w.Entities,
+		views:      views,
 		catalogue:  catalogue,
 		settings:   settings,
 		generation: 1,
-		speed:      fastest(w.Entities),
-		events:     make([]eventWork, len(w.Events)),
-		truths:     make([]Sighting, len(w.Events)),
-		requested:  make([]request, len(w.Jobs)),
-		judged:     make([]judgement, len(w.Events)),
+		// The faster of the two, so skipping stays sound whichever knowledge
+		// the settings switch to mid-run.
+		speed:     math.Max(views.Mine.Speed(), views.Oracle.Speed()),
+		events:    make([]eventWork, len(w.Events)),
+		truths:    make([]Sighting, len(w.Events)),
+		requested: make([]request, len(w.Jobs)),
+		judged:    make([]judgement, len(w.Events)),
 	}
 	for i, event := range w.Events {
 		triggers := make([]domain.Point, 0, len(event.Picks))
@@ -222,9 +235,9 @@ func (p *Planner) Plan(at time.Duration) Plan {
 
 	var plan Plan
 	off := p.settings.Mode == domain.IntentOff
-	var paths []Path
+	var paths []observe.Path
 	if !off {
-		paths = Paths(p.entities, at, p.settings)
+		paths = p.whereabouts().Reach(at, p.settings.Lookahead, p.settings.Protects)
 	}
 
 	open := p.open[:0]
@@ -289,24 +302,16 @@ func (p *Planner) sightingAt(i int) domain.Point {
 	return sighting.At
 }
 
-// fastest is how quickly the quickest protected entity moves, in metres per
-// second, over its whole track. Measured from the tracks rather than assumed,
-// so a scenario with faster vehicles cannot quietly break the skip above.
-func fastest(entities []domain.Entity) float64 {
-	speed := 0.0
-	for _, entity := range entities {
-		for k := 1; k < len(entity.Track); k++ {
-			a, b := entity.Track[k-1], entity.Track[k]
-			if seconds := (b.At - a.At).Seconds(); seconds > 0 {
-				speed = math.Max(speed, a.Point.DistanceTo(b.Point)/seconds)
-			}
-		}
+// whereabouts is the view the current knowledge decides from.
+func (p *Planner) whereabouts() observe.Whereabouts {
+	if p.settings.Knowledge == domain.KnowledgeTruth {
+		return p.views.Oracle
 	}
-	return speed
+	return p.views.Mine
 }
 
 // assess judges one event against the protected paths.
-func (p *Planner) assess(i int, at time.Duration, paths []Path) domain.IntentTransition {
+func (p *Planner) assess(i int, at time.Duration, paths []observe.Path) domain.IntentTransition {
 	sighting, ok := p.sight(i)
 	if !ok {
 		return domain.IntentTransition{At: at, State: domain.EventUnknown}
@@ -314,7 +319,7 @@ func (p *Planner) assess(i int, at time.Duration, paths []Path) domain.IntentTra
 	out := domain.IntentTransition{At: at, Basis: sighting.Basis}
 	judged := &p.judged[i]
 	judged.at, judged.from, judged.slack = at, sighting.At, math.Inf(1)
-	entity, distance, found := Nearest(paths, sighting.At)
+	entity, distance, found := observe.Nearest(paths, sighting.At)
 	// Where people were when the event happened counts as much as where they
 	// are going: an event that shook someone is worth locating after they
 	// have walked away, since its location is where to look for them.
@@ -358,12 +363,9 @@ func (p *Planner) strikeOf(i int, from domain.Point) struck {
 		return event.struck
 	}
 	hit := struck{measured: true, from: from, distance: math.Inf(1)}
-	for _, entity := range p.entities {
-		if !p.settings.Protects(entity.Kind) || len(entity.Track) == 0 {
-			continue
-		}
-		if d := entity.PositionAt(event.origin).DistanceTo(from); d < hit.distance {
-			hit.entity, hit.distance, hit.found = entity.ID, d, true
+	for _, unit := range p.whereabouts().Positions(event.origin, p.settings.Protects) {
+		if d := unit.At.DistanceTo(from); d < hit.distance {
+			hit.entity, hit.distance, hit.found = unit.Entity, d, true
 		}
 	}
 	event.struck = hit

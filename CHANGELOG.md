@@ -3,11 +3,25 @@
 Every release, newest first. `make release` will not tag a version without a
 section here, so the tag message and this file always agree.
 
-## 3.1.0 — unreleased
+## 4.0.0 — unreleased
 
-MINOR: a scenario may run the mine's own workflow; one that does not replays
-exactly as under 3.0.0 — a sweep of the calibrated days on both gave the same
-`runs.csv` byte for byte.
+MAJOR: a run whose intent protects people decides differently — a person is
+now protected by every stretch of tunnel they could walk to, not by the route
+the simulator will walk them.
+
+- **What the mine can read, separated from what the simulator knows**
+  (`internal/observe`). The planner reads where units are through a
+  `Whereabouts` it is given, never from their tracks: the mine's own reading —
+  every unit's position exactly, each vehicle's planned route, and for a person
+  the tunnels they could reach over the lookahead at walking pace — or, for the
+  oracle arm only, the simulator's truth. Both views keep one contract, held by
+  one test: exact positions, a reach that covers everywhere the unit really
+  goes, and a reach that moves no faster than the planner's skipping assumes.
+  A test fails if the planner's own code reads a track.
+- `mineplan.Reach`: the ground within a distance of a point along the tunnels,
+  held exactly to the graph's own route search by a property test.
+- Nothing else moves: with intent off, or protecting no people, a scenario
+  without a pipeline replays exactly as under 3.0.0.
 
 - **The mine's workflow in a scenario** (`pipeline`): pick, associate, locate,
   with a trigger deciding when a sweep runs (`fixed`, `when-drained`,
@@ -23,7 +37,7 @@ exactly as under 3.0.0 — a sweep of the calibrated days on both gave the same
 - The same seed produces the same seismic events with and without a pipeline,
   so a comparison isolates the workflow.
 - A development build is named after the release this file says it leads to —
-  this section makes them 3.1.0-dev — rather than the next patch.
+  this section makes them 4.0.0-dev — rather than the next patch.
 
 ## 3.0.0 — 2026-09-18
 
