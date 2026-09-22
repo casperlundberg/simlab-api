@@ -3,6 +3,28 @@
 Every release, newest first. `make release` will not tag a version without a
 section here, so the tag message and this file always agree.
 
+## 3.1.0 — unreleased
+
+MINOR: a scenario may run the mine's own workflow; one that does not replays
+exactly as under 3.0.0 — a sweep of the calibrated days on both gave the same
+`runs.csv` byte for byte.
+
+- **The mine's workflow in a scenario** (`pipeline`): pick, associate, locate,
+  with a trigger deciding when a sweep runs (`fixed`, `when-drained`,
+  `just-in-time`, `adaptive`, and a pressure override that only ever sweeps
+  earlier), each stage stating its own priority and cost. A finished sweep
+  submits a locate per group before the autoscaler sees the queue they join,
+  and an event is located when its locate finishes, not when its fourth pick
+  does. The rules come from the operational extract
+  (platform-experiments `docs/workflow-inference.md`).
+- The queue takes work submitted during a run, with its deadline running from
+  that moment; a run does not end with submitted work outstanding.
+- Metrics count the `sweeps` and `locates` the workflow submitted.
+- The same seed produces the same seismic events with and without a pipeline,
+  so a comparison isolates the workflow.
+- A development build is named after the release this file says it leads to —
+  this section makes them 3.1.0-dev — rather than the next patch.
+
 ## 3.0.0 — 2026-09-18
 
 MAJOR: a run created without stating `decay_to` decays to a different level, so

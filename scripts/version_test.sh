@@ -65,6 +65,40 @@ echo dirty >> "$repo/file"
 expect "a release tag with uncommitted changes is not that release" \
   "$("$version" "$repo")" "1.2.0+$(short).dirty"
 
+# What the changelog says the unreleased work is. A breaking change recorded as
+# the next MAJOR must not build as a patch of the last release, or a report made
+# on it names a version that promises nothing broke.
+repo="$work/changelog"
+git init -q -b main "$repo"
+git -C "$repo" config user.email test@example.com
+git -C "$repo" config user.name test
+changelog() { printf '# Changelog\n\n%s\n\n## 1.2.0 — 2026-09-01\n' "$1" > "$repo/CHANGELOG.md"; git -C "$repo" add CHANGELOG.md; git -C "$repo" commit -q -m "$1"; }
+
+changelog "## 1.0.0 — unreleased"
+expect "before any release, a development build is a pre-release of the version the changelog names" \
+  "$("$version" "$repo")" "1.0.0-dev.1+$(short)"
+
+changelog "## 1.2.0 — 2026-09-01"
+git -C "$repo" tag -a v1.2.0 -m 1.2.0
+changelog "## 2.0.0 — unreleased"
+commit() { echo "$1" >> "$repo/file"; git -C "$repo" add file; git -C "$repo" commit -q -m "$1"; }
+commit breaking
+expect "after a release, a development build is a pre-release of the unreleased version the changelog names" \
+  "$("$version" "$repo")" "2.0.0-dev.2+$(short)"
+
+changelog "## 1.2.0 — unreleased"
+expect "an unreleased section no higher than the last release is stale, and the next patch is used" \
+  "$("$version" "$repo")" "1.2.1-dev.3+$(short)"
+
+changelog "## 1.3.0 - Unreleased"
+expect "the section is found with a plain hyphen and in any case" \
+  "$("$version" "$repo")" "1.3.0-dev.4+$(short)"
+
+printf '# Changelog\n\n## 1.2.0 — 2026-09-01\n\nThe 1.3.0 release is unreleased.\n' > "$repo/CHANGELOG.md"
+git -C "$repo" commit -q -am "prose"
+expect "only a section heading names the unreleased version, not prose" \
+  "$("$version" "$repo")" "1.2.1-dev.5+$(short)"
+
 if [[ $failures -gt 0 ]]; then
   echo "$failures check(s) failed"
   exit 1

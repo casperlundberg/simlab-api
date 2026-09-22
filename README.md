@@ -80,7 +80,9 @@ which refuses a dirty tree, a branch other than `main`, a `main` behind its
 remote, a version not above the last release, a `CHANGELOG.md` with no section
 for it, and failing checks — then tags, with the changelog section as the tag
 message, and pushes the commit and the tag together so CI stamps the image with
-the release. Between releases a build is `1.3.1-dev.N+<commit>`, and `.dirty`
+the release. Between releases a build is a pre-release of the release the
+changelog's unreleased section names — `2.0.0-dev.N+<commit>` under a section
+headed `## 2.0.0 — unreleased`, the next patch without one — and `.dirty`
 when built with uncommitted changes (`make version` prints it). Every binary
 carries its version and commit; `GET /api/version` reports them.
 
