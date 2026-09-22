@@ -46,15 +46,18 @@ var mayImport = map[string][]string{
 	"internal/autoscaler/astest": {},
 	"internal/store":             {"internal/domain"},
 
-	// The application. Debt: run holds the concrete autoscaler client; a port
-	// it owns, with the client as one adapter behind it, removes this.
+	// The application. run drives the autoscaler through a port it declares
+	// (run.Autoscaler); it imports the client's package for the protocol's
+	// vocabulary — targets, settings, cycles — not for the client. runner reads
+	// runs through a store interface of its own.
 	"internal/run":    {"internal/autoscaler", "internal/buildinfo", "internal/domain", "internal/intent", "internal/observe", "internal/pipeline", "internal/queue", "internal/workload"},
-	"internal/runner": {"internal/domain", "internal/intent", "internal/run", "internal/store"},
+	"internal/runner": {"internal/domain", "internal/intent", "internal/run"},
 	"internal/events": {"internal/run"},
 
-	// The HTTP interface. Debt: it takes the concrete store, manager and
-	// autoscaler client; interfaces of its own remove the store and client.
-	"internal/api": {"internal/autoscaler", "internal/buildinfo", "internal/domain", "internal/events", "internal/intent", "internal/observe", "internal/runner", "internal/store", "internal/usecase", "internal/workload"},
+	// The HTTP interface. Its store, manager and autoscaler are interfaces it
+	// declares (api/ports.go); it imports the autoscaler's package for the
+	// vocabulary of the endpoints it stands in front of.
+	"internal/api": {"internal/autoscaler", "internal/buildinfo", "internal/domain", "internal/events", "internal/intent", "internal/observe", "internal/run", "internal/runner", "internal/usecase", "internal/workload"},
 
 	"internal/app": nil, // the composition root sees everything
 }
@@ -183,6 +186,19 @@ func TestTheQueueAndTheAutoscalerNeverSeeEachOther(t *testing.T) {
 	for _, pkg := range []string{"internal/queue", "internal/orchestrator", "internal/workload", "internal/pipeline"} {
 		if contains(graph[pkg], "internal/autoscaler") {
 			t.Errorf("%s imports internal/autoscaler: queue mechanics have learned about scaling decisions", pkg)
+		}
+	}
+}
+
+// Persistence is an implementation detail of one package: everything else
+// declares what it needs of it, and only the composition root knows it is
+// Postgres. A handler or a manager that imported the store could no longer be
+// tested, or run, without a database.
+func TestOnlyTheCompositionRootKnowsTheStore(t *testing.T) {
+	for pkg, imports := range ours(t) {
+		if pkg != "internal/app" && contains(imports, "internal/store") {
+			t.Errorf("%s imports internal/store: declare what it needs as an interface of its own, "+
+				"and let internal/app wire the store in", pkg)
 		}
 	}
 }

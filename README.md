@@ -63,6 +63,7 @@ anecdote.
 ## Documentation
 
 - [`docs/intent.md`](docs/intent.md) — how the mine reorders its work: protected volumes, decay, promotion, exemption from cloud burst
+- [`docs/use-cases.md`](docs/use-cases.md) — scoring a run for the decisions its information was for: turn-back, way-out, reroute
 - [`docs/interactions.md`](docs/interactions.md) — sequence diagrams for a simulation run, a live run, and comparing two policies
 - [`docs/development.md`](docs/development.md) — working on it, driving it by hand against a real autoscaler
 - [`api/openapi.yaml`](api/openapi.yaml) — the HTTP contract, checked against the routes by a test

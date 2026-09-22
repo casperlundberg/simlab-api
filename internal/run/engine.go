@@ -54,6 +54,25 @@ type Spec struct {
 	Control *intent.Control
 }
 
+// Autoscaler is what a run needs of the scaling controller it is a test of:
+// a target of its own to drive, the settings that target runs under, a
+// decision for each cycle, and which build it is. The port is declared here,
+// by the engine that needs it, so the engine depends on what it asks and on
+// nothing else; the HTTP client in internal/autoscaler is its adapter, and the
+// engine's tests keep driving that real client against a fake speaking the
+// real protocol.
+type Autoscaler interface {
+	Version(ctx context.Context) (autoscaler.Build, error)
+	CreateTarget(ctx context.Context, target autoscaler.Target, settings json.RawMessage) (autoscaler.TargetSnapshot, error)
+	DeleteTarget(ctx context.Context, id string) error
+	GetSettings(ctx context.Context, id string) (autoscaler.SettingsSnapshot, error)
+	TargetStatus(ctx context.Context, id string) (autoscaler.Status, error)
+	Cycle(ctx context.Context, id string, request autoscaler.CycleRequest) (autoscaler.CycleResult, error)
+}
+
+// The HTTP client is the adapter, and a compile-time check says it still fits.
+var _ Autoscaler = (*autoscaler.Client)(nil)
+
 // Recorder is where a run's results go.
 type Recorder interface {
 	SaveCycle(ctx context.Context, cycle domain.Cycle) error
@@ -105,7 +124,7 @@ const (
 
 // Engine executes runs.
 type Engine struct {
-	autoscaler *autoscaler.Client
+	autoscaler Autoscaler
 	recorder   Recorder
 	publisher  Publisher
 
@@ -118,7 +137,7 @@ type Engine struct {
 }
 
 // New builds an engine.
-func New(client *autoscaler.Client, recorder Recorder, publisher Publisher) *Engine {
+func New(client Autoscaler, recorder Recorder, publisher Publisher) *Engine {
 	return &Engine{
 		autoscaler: client,
 		recorder:   recorder,

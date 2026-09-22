@@ -25,7 +25,6 @@ import (
 	"github.com/casperlundberg/simlab-api/internal/domain"
 	"github.com/casperlundberg/simlab-api/internal/events"
 	"github.com/casperlundberg/simlab-api/internal/runner"
-	"github.com/casperlundberg/simlab-api/internal/store"
 )
 
 const maxBodyBytes = 1 << 20
@@ -74,9 +73,9 @@ func (s *server) matches(candidate string) bool {
 
 // Options is everything the HTTP layer needs.
 type Options struct {
-	Store      *store.Store
-	Manager    *runner.Manager
-	Autoscaler *autoscaler.Client
+	Store      Store
+	Manager    Manager
+	Autoscaler Autoscaler
 	Hub        *events.Hub
 	Logger     *slog.Logger
 
@@ -356,7 +355,7 @@ func decode(r *http.Request, into any) error {
 
 func writeStoreError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, store.ErrNotFound):
+	case errors.Is(err, domain.ErrNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, runner.ErrAlreadyRunning):
 		writeError(w, http.StatusConflict, err.Error())

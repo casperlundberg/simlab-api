@@ -9,6 +9,8 @@
 // pipeline, observe, intent, usecase); the adapters to the outside (the
 // autoscaler client, the store); the application (run, runner, events); its
 // HTTP interface (api); and the composition root (app). Dependencies point
-// inward only, and nothing in the simulated mine knows there is a network or a
-// database.
+// inward only, nothing in the simulated mine knows there is a network or a
+// database, and only the composition root knows the store is Postgres: the
+// application and its interface declare what they need as interfaces of their
+// own.
 package arch

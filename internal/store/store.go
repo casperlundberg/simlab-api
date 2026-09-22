@@ -15,9 +15,10 @@ import (
 	"github.com/casperlundberg/simlab-api/internal/domain"
 )
 
-// ErrNotFound is returned when a row does not exist, so the HTTP layer can map
-// it to a status code without matching message text.
-var ErrNotFound = errors.New("not found")
+// ErrNotFound is returned, wrapped, when a row does not exist. It is the
+// domain's own, so a caller can tell "no such thing" without knowing it came
+// from Postgres.
+var ErrNotFound = domain.ErrNotFound
 
 // Store is Simlab's persistence.
 type Store struct {

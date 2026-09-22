@@ -29,6 +29,12 @@ the simulator will walk them.
   asked. A decision waits on the event's first location, or — with `need` set
   to `warning` — on the first location whose own zone reaches the unit, which is
   where imperfect hypocentres cost a decision. See `docs/use-cases.md`.
+- **The application and its interface depend on ports they declare.** The run
+  engine drives the autoscaler through `run.Autoscaler`, the run manager reads
+  runs through `runner.Store`, and the HTTP handlers take a store, a manager and
+  an autoscaler as interfaces split by what they are for (`api/ports.go`). Only
+  the composition root knows the store is Postgres — now a test — and "not
+  found" is the domain's own error. No behaviour changes.
 - **The layering is enforced** (`internal/arch`), as autoscaler's is: every
   package's imports against a table, and the invariants that matter named —
   the simulated mine never imports the network or the database, what decides

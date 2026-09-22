@@ -13,8 +13,18 @@ import (
 	"github.com/casperlundberg/simlab-api/internal/domain"
 	"github.com/casperlundberg/simlab-api/internal/intent"
 	"github.com/casperlundberg/simlab-api/internal/run"
-	"github.com/casperlundberg/simlab-api/internal/store"
 )
+
+// Store is what the manager reads to turn a run's id into what to execute:
+// the run, its mine and scenario, and the settings and intent it was created
+// with. The Postgres store is the implementation, wired in by internal/app.
+type Store interface {
+	Run(ctx context.Context, id string) (domain.Run, error)
+	Mine(ctx context.Context, id string) (domain.Mine, error)
+	Scenario(ctx context.Context, id string) (domain.Scenario, error)
+	RunSettings(ctx context.Context, id string) (json.RawMessage, error)
+	RunIntent(ctx context.Context, runID string) (*domain.RunIntent, error)
+}
 
 // ErrAlreadyRunning is returned when a run is asked to start twice.
 var ErrAlreadyRunning = errors.New("this run is already in flight")
@@ -34,7 +44,7 @@ type Executor interface {
 
 // Manager starts runs and keeps track of them.
 type Manager struct {
-	store  *store.Store
+	store  Store
 	engine Executor
 	log    *slog.Logger
 
@@ -54,7 +64,7 @@ type Manager struct {
 }
 
 // New builds a manager.
-func New(store *store.Store, engine Executor, log *slog.Logger) *Manager {
+func New(store Store, engine Executor, log *slog.Logger) *Manager {
 	if log == nil {
 		log = slog.Default()
 	}
