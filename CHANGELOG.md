@@ -29,6 +29,11 @@ the simulator will walk them.
   asked. A decision waits on the event's first location, or — with `need` set
   to `warning` — on the first location whose own zone reaches the unit, which is
   where imperfect hypocentres cost a decision. See `docs/use-cases.md`.
+- **The layering is enforced** (`internal/arch`), as autoscaler's is: every
+  package's imports against a table, and the invariants that matter named —
+  the simulated mine never imports the network or the database, what decides
+  and what scores it never see each other, the queue and the autoscaler client
+  never meet.
 - `mineplan.Reach`: the ground within a distance of a point along the tunnels,
   held exactly to the graph's own route search by a property test.
 - Nothing else moves: with intent off, or protecting no people, a scenario

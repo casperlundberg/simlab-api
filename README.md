@@ -67,6 +67,20 @@ anecdote.
 - [`docs/development.md`](docs/development.md) — working on it, driving it by hand against a real autoscaler
 - [`api/openapi.yaml`](api/openapi.yaml) — the HTTP contract, checked against the routes by a test
 
+## Layers
+
+Inside out: the vocabulary (`domain`); the physics and geometry of a mine
+(`hazard`, `seismic`, `mineplan`); the simulated mine and its processing —
+the world, the queue, the workflow, what the mine can read, what it decides and
+what its decisions are scored against (`workload`, `orchestrator`, `queue`,
+`pipeline`, `observe`, `intent`, `usecase`); the adapters to the outside (the
+`autoscaler` client, the `store`); the application (`run`, `runner`,
+`events`); its HTTP interface (`api`); and the composition root (`app`).
+Dependencies point inward only, and nothing in the simulated mine imports the
+network or the database. `internal/arch` holds the layering as a table and
+fails the build on an import that crosses it; the few dependencies the layering
+does not want are marked there as debts, with what removes each.
+
 ## Versions
 
 Releases are [semantic versions](https://semver.org), tagged `vMAJOR.MINOR.PATCH`
