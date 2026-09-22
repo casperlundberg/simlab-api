@@ -104,6 +104,12 @@ func TestEveryFieldOfAScenarioSurvivesTheDatabase(t *testing.T) {
 		Associate: domain.SweepSpec{Priority: 100, Seconds: 1.126, PerLocate: 0.08},
 		Locate:    domain.StageSpec{Priority: 50, Seconds: 30.25},
 	}
+	saved.Activity = &domain.ActivitySpec{
+		Areas: 3, Rotate: 8 * time.Hour, Spread: 60,
+		Mix: domain.ActivityMix{Blast: 0.4, Work: 0.4, Background: 0.2},
+		Blasting: domain.BlastSchedule{Start: 14 * time.Hour, Window: time.Hour, Every: 15 * time.Minute,
+			OmoriP: 0.9, OmoriC: 4 * time.Minute, Length: 10 * time.Hour},
+	}
 	if err := s.SaveScenario(ctx, saved); err != nil {
 		t.Fatalf("SaveScenario() = %v", err)
 	}
@@ -117,6 +123,8 @@ func TestEveryFieldOfAScenarioSurvivesTheDatabase(t *testing.T) {
 	noZeroFields(t, "burst", saved.Bursts[0])
 	noZeroFields(t, "pipeline", *saved.Pipeline)
 	noZeroFields(t, "sweep trigger", saved.Pipeline.Sweep)
+	noZeroFields(t, "activity", *saved.Activity)
+	noZeroFields(t, "blasting", saved.Activity.Blasting)
 	if !reflect.DeepEqual(saved, read) {
 		t.Errorf("the scenario changed in the database\n saved: %+v\n  read: %+v", saved, read)
 	}

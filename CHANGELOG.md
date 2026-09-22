@@ -29,6 +29,13 @@ the simulator will walk them.
   asked. A decision waits on the event's first location, or — with `need` set
   to `warning` — on the first location whose own zone reaches the unit, which is
   where imperfect hypocentres cost a decision. See `docs/use-cases.md`.
+- **How a mine is worked** (`activity` on a scenario, `internal/activity`,
+  `docs/activity.md`): the same daily rate from work around the faces being
+  worked, the Omori sequence after each blast in a daily blasting window, and a
+  background elsewhere — instead of evenly along every tunnel around the clock.
+  Faces rotate; blasts fire at them in turn; each event records what produced
+  it and the workload the blasts fired. Optional, on a stream of its own: a
+  scenario without it replays exactly as before.
 - **The application and its interface depend on ports they declare.** The run
   engine drives the autoscaler through `run.Autoscaler`, the run manager reads
   runs through `runner.Store`, and the HTTP handlers take a store, a manager and

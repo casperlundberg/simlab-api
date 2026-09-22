@@ -64,6 +64,7 @@ type scenarioWire struct {
 	PriorityMix     map[string]float64 `json:"priority_mix"`
 	Bursts          []Burst            `json:"bursts,omitempty"`
 	Pipeline        *PipelineSpec      `json:"pipeline,omitempty"`
+	Activity        *ActivitySpec      `json:"activity,omitempty"`
 	Description     string             `json:"description,omitempty"`
 	CreatedAt       time.Time          `json:"created_at,omitempty"`
 }
@@ -84,6 +85,7 @@ func (s Scenario) MarshalJSON() ([]byte, error) {
 		PriorityMix:     mix,
 		Bursts:          s.Bursts,
 		Pipeline:        s.Pipeline,
+		Activity:        s.Activity,
 		Description:     s.Description,
 		CreatedAt:       s.CreatedAt,
 	})
@@ -115,6 +117,7 @@ func (s *Scenario) UnmarshalJSON(data []byte) error {
 		PriorityMix: mix,
 		Bursts:      wire.Bursts,
 		Pipeline:    wire.Pipeline,
+		Activity:    wire.Activity,
 		Description: wire.Description,
 		CreatedAt:   wire.CreatedAt,
 	}
@@ -260,4 +263,65 @@ func triggerSpecOf(wire triggerWire) TriggerSpec {
 		}
 	}
 	return spec
+}
+
+// The activity on the wire, durations in seconds like everything else.
+type activityWire struct {
+	Areas         int          `json:"areas"`
+	RotateSeconds float64      `json:"rotate_seconds"`
+	Mix           *ActivityMix `json:"mix"`
+	Blasting      blastingWire `json:"blasting"`
+	Spread        float64      `json:"spread_m"`
+}
+
+type blastingWire struct {
+	StartSeconds  float64 `json:"start_seconds"`
+	WindowSeconds float64 `json:"window_seconds"`
+	EverySeconds  float64 `json:"every_seconds"`
+	OmoriP        float64 `json:"omori_p"`
+	OmoriCSeconds float64 `json:"omori_c_seconds"`
+	LengthSeconds float64 `json:"length_seconds"`
+}
+
+// MarshalJSON renders an activity in the wire shape.
+func (a ActivitySpec) MarshalJSON() ([]byte, error) {
+	b := a.Blasting
+	return json.Marshal(activityWire{
+		Areas: a.Areas, RotateSeconds: a.Rotate.Seconds(), Mix: &a.Mix, Spread: a.Spread,
+		Blasting: blastingWire{
+			StartSeconds: b.Start.Seconds(), WindowSeconds: b.Window.Seconds(), EverySeconds: b.Every.Seconds(),
+			OmoriP: b.OmoriP, OmoriCSeconds: b.OmoriC.Seconds(), LengthSeconds: b.Length.Seconds(),
+		},
+	})
+}
+
+// UnmarshalJSON reads an activity from the wire shape; what it leaves out
+// takes the default.
+func (a *ActivitySpec) UnmarshalJSON(data []byte) error {
+	d := DefaultActivity()
+	wire := activityWire{
+		Areas: d.Areas, RotateSeconds: d.Rotate.Seconds(), Spread: d.Spread,
+		Blasting: blastingWire{
+			StartSeconds: d.Blasting.Start.Seconds(), WindowSeconds: d.Blasting.Window.Seconds(),
+			EverySeconds: d.Blasting.Every.Seconds(), OmoriP: d.Blasting.OmoriP,
+			OmoriCSeconds: d.Blasting.OmoriC.Seconds(), LengthSeconds: d.Blasting.Length.Seconds(),
+		},
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	// A mix given is the whole mix: shares mean something only together.
+	mix := d.Mix
+	if wire.Mix != nil {
+		mix = *wire.Mix
+	}
+	w := wire.Blasting
+	*a = ActivitySpec{
+		Areas: wire.Areas, Rotate: seconds(wire.RotateSeconds), Mix: mix, Spread: wire.Spread,
+		Blasting: BlastSchedule{
+			Start: seconds(w.StartSeconds), Window: seconds(w.WindowSeconds), Every: seconds(w.EverySeconds),
+			OmoriP: w.OmoriP, OmoriC: seconds(w.OmoriCSeconds), Length: seconds(w.LengthSeconds),
+		},
+	}
+	return nil
 }

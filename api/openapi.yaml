@@ -956,6 +956,8 @@ components:
             autonomous_vehicles: { type: integer, minimum: 0 }
         pipeline:
           $ref: "#/components/schemas/Pipeline"
+        activity:
+          $ref: "#/components/schemas/Activity"
         seed:
           type: integer
           format: int64
@@ -1029,6 +1031,39 @@ components:
             per_locate: { type: number, minimum: 0 }
           required: [seconds]
       required: [sweep, window_seconds, pick, associate, locate]
+
+    Activity:
+      type: object
+      description: |
+        How the mine is worked, as a source of seismicity. Omit it and the
+        mine's background is spread along its tunnels around the clock, as
+        every scenario before it. With one, the same rate comes from three
+        sources: work around the faces being worked, the sequence after each
+        blast, and a background elsewhere. Faces are chosen afresh each
+        rotation; blasts are fired in a window each day, one every interval,
+        at the worked faces in turn, and each is followed by a sequence that
+        decays by the modified Omori law. Anything left out takes its default.
+        See docs/activity.md for the sources the defaults come from.
+      properties:
+        areas: { type: integer, minimum: 1, description: Faces worked at once. Default 4. }
+        rotate_seconds: { type: number, exclusiveMinimum: 0, description: How long a set of faces is worked before work moves on. Default 43200. }
+        mix:
+          type: object
+          description: The share of events from each source. Given, it replaces the default whole. Default 0.3, 0.5, 0.2.
+          properties:
+            blast: { type: number, minimum: 0 }
+            work: { type: number, minimum: 0 }
+            background: { type: number, minimum: 0 }
+        blasting:
+          type: object
+          properties:
+            start_seconds: { type: number, minimum: 0, exclusiveMaximum: 86400, description: Time of day of the first blast. Default 4500 (01:15). }
+            window_seconds: { type: number, minimum: 0, description: How long blasting goes on; 0 is one blast a day. Default 1800. }
+            every_seconds: { type: number, description: Between blasts in the window. Default 600. }
+            omori_p: { type: number, exclusiveMinimum: 0, maximum: 3, description: Decay of a blast's sequence. Default 1.0. }
+            omori_c_seconds: { type: number, exclusiveMinimum: 0, description: How soon the decay sets in. Default 300. }
+            length_seconds: { type: number, exclusiveMinimum: 0, description: How long a sequence is drawn over. Default 43200. }
+        spread_m: { type: number, exclusiveMinimum: 0, description: How far from a face its events fall, per axis. Default 75. }
 
     Stage:
       type: object

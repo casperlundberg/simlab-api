@@ -170,6 +170,13 @@ type Scenario struct {
 	// same seismic events from the same seed and can be compared.
 	Pipeline *PipelineSpec `json:"pipeline,omitempty"`
 
+	// Activity is how the mine is worked: which faces, and when blasts are
+	// fired. Optional: nil spreads the mine's background seismicity along its
+	// tunnels around the clock, as every scenario before it did. With one,
+	// the same rate comes from the working faces, the sequences after blasts
+	// and a low background elsewhere.
+	Activity *ActivitySpec `json:"activity,omitempty"`
+
 	// Seed makes a scenario reproducible. Two runs of the same scenario
 	// replay exactly the same jobs, which is what makes comparing two
 	// autoscaler settings a controlled experiment rather than an anecdote.
@@ -211,6 +218,11 @@ func (s Scenario) Validate() error {
 	}
 	if s.Pipeline != nil {
 		if err := s.Pipeline.Validate(); err != nil {
+			problems = append(problems, err.Error())
+		}
+	}
+	if s.Activity != nil {
+		if err := s.Activity.Validate(); err != nil {
 			problems = append(problems, err.Error())
 		}
 	}

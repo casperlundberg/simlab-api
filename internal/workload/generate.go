@@ -15,6 +15,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/casperlundberg/simlab-api/internal/activity"
 	"github.com/casperlundberg/simlab-api/internal/domain"
 	"github.com/casperlundberg/simlab-api/internal/mineplan"
 	"github.com/casperlundberg/simlab-api/internal/seismic"
@@ -178,6 +179,10 @@ type Workload struct {
 
 	// Entities are the people and vehicles underground, and where they go.
 	Entities []domain.Entity
+
+	// Blasts are the blasts fired, in a scenario that says how its mine is
+	// worked.
+	Blasts []activity.BlastAt
 }
 
 // Event is one seismic event, and what the sensors made of it.
@@ -201,6 +206,15 @@ type Event struct {
 	// job FirstJob+k processes.
 	Picks    []seismic.Pick
 	FirstJob domain.JobID
+
+	// Activity is what produced it in a worked mine — "work", "blast" or
+	// "background" — and empty in a scenario that does not say how its mine
+	// is worked, or for a burst's events. Near is the face work and blasts
+	// happen around; Blast the index in Workload.Blasts of the blast it
+	// follows, -1 otherwise. Ground truth, like Truth.
+	Activity string
+	Near     domain.Point
+	Blast    int
 }
 
 // Generate produces the jobs for one scenario, deterministically from its
@@ -241,7 +255,28 @@ func Build(mine domain.Mine, scenario domain.Scenario) (Workload, error) {
 	sizes := rand.New(rand.NewPCG(uint64(scenario.Seed), magnitudeStream))
 	mainShockDrawn := make([]bool, len(scenario.Bursts))
 
-	events, err := seismicEvents(mine, scenario, random)
+	// A worked mine's events come from its working, which needs the plan of
+	// the mine to know its faces; every other scenario draws them as it always
+	// has, and derives the layout only once it knows the scenario is not too
+	// large to replay.
+	var (
+		events     []time.Duration
+		worked     []happening
+		blasts     []activity.BlastAt
+		layout     domain.Layout
+		haveLayout bool
+		err        error
+	)
+	if scenario.Activity == nil {
+		events, err = seismicEvents(mine, scenario, random)
+	} else {
+		layout, haveLayout = layoutOf(mine), true
+		worked, blasts, err = workedEvents(mine, scenario, layout,
+			rand.New(rand.NewPCG(uint64(scenario.Seed), activityStream)))
+		for _, h := range worked {
+			events = append(events, h.at)
+		}
+	}
 	if err != nil {
 		return Workload{}, err
 	}
@@ -258,7 +293,9 @@ func Build(mine domain.Mine, scenario domain.Scenario) (Workload, error) {
 			"count or the background rate", estimated)
 	}
 
-	layout := layoutOf(mine)
+	if !haveLayout {
+		layout = layoutOf(mine)
+	}
 	epicentres, err := burstEpicentres(scenario, layout, geometry)
 	if err != nil {
 		return Workload{}, err
@@ -269,8 +306,9 @@ func Build(mine domain.Mine, scenario domain.Scenario) (Workload, error) {
 		Layout:   layout,
 		Model:    Rock,
 		Entities: workforce(layout, scenario),
+		Blasts:   blasts,
 	}
-	for _, at := range events {
+	for k, at := range events {
 		picks := 0
 		for sensor := 0; sensor < mine.Sensors; sensor++ {
 			if random.Float64() < detectionProbability {
@@ -285,8 +323,19 @@ func Build(mine domain.Mine, scenario domain.Scenario) (Workload, error) {
 		// The count above is the draw the job stream has always made. The
 		// geometry only decides which sensors those are — the nearest — and
 		// draws from streams of its own, so no job moves.
-		source := sourceOf(mine, scenario, at, geometry)
-		truth := placeEvent(source, epicentres, layout, geometry)
+		var (
+			source *int
+			truth  domain.Point
+			worker = activity.Source{Blast: -1}
+		)
+		if worked == nil {
+			source = sourceOf(mine, scenario, at, geometry)
+			truth = placeEvent(source, epicentres, layout, geometry)
+		} else {
+			source = worked[k].burst
+			truth = placeWorked(worked[k], scenario.Activity.Spread, epicentres, layout, geometry)
+			worker = worked[k].source
+		}
 		detecting := nearest(layout.Sensors, truth, picks)
 
 		magnitude := magnitudeOf(source, scenario, mainShockDrawn, sizes)
@@ -297,6 +346,10 @@ func Build(mine domain.Mine, scenario domain.Scenario) (Workload, error) {
 			Magnitude: magnitude,
 			Picks:     Rock.Picks(seismic.Event{At: truth, Origin: at}, detecting, scenario.PickJitter, noise),
 			FirstJob:  domain.JobID(len(out.Jobs)),
+			Blast:     worker.Blast,
+		}
+		if worked != nil && source == nil {
+			event.Activity, event.Near = worker.Kind.String(), worker.Near
 		}
 		for k := range event.Picks {
 			event.Picks[k].Magnitude = magnitude + sizes.NormFloat64()*stationScatter

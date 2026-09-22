@@ -31,7 +31,8 @@ var mayImport = map[string][]string{
 	"internal/mineplan": {"internal/domain"},
 
 	// The simulated mine and its processing.
-	"internal/workload":     {"internal/domain", "internal/hazard", "internal/mineplan", "internal/seismic"},
+	"internal/activity":     {"internal/domain"},
+	"internal/workload":     {"internal/activity", "internal/domain", "internal/hazard", "internal/mineplan", "internal/seismic"},
 	"internal/orchestrator": {"internal/domain"},
 	"internal/queue":        {"internal/domain", "internal/orchestrator", "internal/workload"},
 	"internal/pipeline":     {"internal/domain", "internal/seismic", "internal/workload"},
@@ -65,7 +66,7 @@ var mayImport = map[string][]string{
 
 // The simulated mine: everything that models the mine and decides about it.
 var mine = []string{
-	"internal/domain", "internal/hazard", "internal/seismic", "internal/mineplan", "internal/workload",
+	"internal/domain", "internal/hazard", "internal/seismic", "internal/mineplan", "internal/activity", "internal/workload",
 	"internal/orchestrator", "internal/queue", "internal/pipeline", "internal/observe", "internal/intent",
 	"internal/usecase",
 }
