@@ -830,6 +830,8 @@ components:
             people: { type: integer, minimum: 0 }
             crewed_vehicles: { type: integer, minimum: 0 }
             autonomous_vehicles: { type: integer, minimum: 0 }
+        pipeline:
+          $ref: "#/components/schemas/Pipeline"
         seed:
           type: integer
           format: int64
@@ -848,6 +850,71 @@ components:
         description: { type: string }
         created_at: { type: string, format: date-time }
       required: [mine_id, duration_seconds, job_seconds, priority_mix]
+
+    Pipeline:
+      type: object
+      description: |
+        The mine's own three-stage workflow — pick, associate, locate — rather
+        than one undifferentiated stream of jobs. Omit it and the scenario
+        generates picks alone at the priorities `priority_mix` states, as every
+        scenario did before. With one, each stage states its own priority and
+        cost; `priority_mix` and `job_seconds` are still drawn from, so the
+        same seed produces the same seismic events with and without it. An
+        event is located when its locate job finishes, not when its fourth pick
+        does.
+      properties:
+        sweep:
+          type: object
+          description: When the mine runs an associate sweep.
+          properties:
+            kind:
+              type: string
+              enum: [fixed, when-drained, just-in-time, adaptive]
+              description: |
+                fixed sweeps on a timer, as production does; when-drained waits
+                for the backlog to clear; just-in-time waits only for the picks
+                the mine believes matter; adaptive aims to sweep as the backlog
+                is predicted to clear.
+            every_seconds: { type: number, description: The interval of a fixed trigger. }
+            deadline_seconds:
+              type: number
+              minimum: 0
+              description: How long when-drained and just-in-time will wait at most.
+            min_seconds: { type: number, description: The adaptive trigger's lower bound. }
+            max_seconds: { type: number, description: The adaptive trigger's upper bound. }
+            pressure:
+              type: object
+              description: Sweep early, never later, once this many picks are ready.
+              properties:
+                backlog: { type: integer, minimum: 1 }
+                floor_seconds: { type: number, description: Stops it firing every cycle once over the threshold. }
+              required: [backlog]
+          required: [kind]
+        window_seconds:
+          type: number
+          exclusiveMinimum: 0
+          description: How far back a sweep looks; an event older than this is finished with.
+        pick: { $ref: "#/components/schemas/Stage" }
+        locate: { $ref: "#/components/schemas/Stage" }
+        associate:
+          type: object
+          description: What a sweep is worth and costs — a fixed part and a part per locate it emits.
+          properties:
+            priority: { type: integer }
+            seconds: { type: number, exclusiveMinimum: 0 }
+            per_locate: { type: number, minimum: 0 }
+          required: [seconds]
+      required: [sweep, window_seconds, pick, associate, locate]
+
+    Stage:
+      type: object
+      properties:
+        priority: { type: integer }
+        seconds:
+          type: number
+          exclusiveMinimum: 0
+          description: Nominal execution time, before per-job variation.
+      required: [seconds]
 
     RunRequest:
       type: object
@@ -1142,6 +1209,12 @@ components:
           type: integer
           description: Jobs whose wait exceeded the deadline of the level they were submitted at, from submission — what decay cost against the SLA work arrived under.
         jobs_reprioritised: { type: integer, description: Jobs intent actually moved at least once. }
+        sweeps:
+          type: integer
+          description: Associate sweeps the mine's workflow submitted; 0 without a pipeline.
+        locates:
+          type: integer
+          description: Locate jobs those sweeps emitted — the cost of how often events are re-located.
         breach_rate: { type: number }
         mean_wait_seconds: { type: number }
         p95_wait_seconds: { type: number }

@@ -305,10 +305,22 @@ func Build(mine domain.Mine, scenario domain.Scenario) (Workload, error) {
 		out.Events = append(out.Events, event)
 
 		for pick := 0; pick < picks; pick++ {
+			// The draws are made either way, and only their meaning changes.
+			// A scenario with a pipeline and one without then produce exactly
+			// the same events, from the same seed, so a comparison between
+			// them isolates the workflow rather than also moving the rock.
+			priority := samplePriority(priorities, weights, random)
+			seconds := sampleDuration(scenario.JobSeconds, random)
+			if scenario.Pipeline != nil {
+				priority = scenario.Pipeline.Pick.Priority
+				// Rescaled rather than redrawn: a second draw would consume
+				// the stream and move every later event.
+				seconds = seconds / scenario.JobSeconds * scenario.Pipeline.Pick.Seconds
+			}
 			out.Jobs = append(out.Jobs, Job{
 				SubmittedAt: at,
-				Priority:    samplePriority(priorities, weights, random),
-				Seconds:     sampleDuration(scenario.JobSeconds, random),
+				Priority:    priority,
+				Seconds:     seconds,
 				Event:       index,
 			})
 			if len(out.Jobs) > maxJobs {

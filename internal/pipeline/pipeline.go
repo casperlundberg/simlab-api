@@ -90,6 +90,11 @@ type Step struct {
 	// is located when its locate *completes* — the work is not done when it is
 	// queued.
 	Located []int
+
+	// Picks are the finished jobs that were picks, which is what the mine's
+	// catalogue records as processed. Separated here because the workflow is
+	// what knows which stage a job belonged to.
+	Picks []domain.JobID
 }
 
 // issued is a job this workflow submitted, and what it is for.
@@ -208,6 +213,7 @@ func (p *Pipeline) Advance(at time.Duration, finished []domain.JobID,
 			p.state[event].processed++
 			p.state[event].unswept++
 			p.completions = append(p.completions, at)
+			step.Picks = append(step.Picks, id)
 		}
 	}
 

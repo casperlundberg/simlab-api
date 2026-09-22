@@ -63,6 +63,7 @@ type scenarioWire struct {
 	Seed            int64              `json:"seed"`
 	PriorityMix     map[string]float64 `json:"priority_mix"`
 	Bursts          []Burst            `json:"bursts,omitempty"`
+	Pipeline        *PipelineSpec      `json:"pipeline,omitempty"`
 	Description     string             `json:"description,omitempty"`
 	CreatedAt       time.Time          `json:"created_at,omitempty"`
 }
@@ -82,6 +83,7 @@ func (s Scenario) MarshalJSON() ([]byte, error) {
 		Seed:            s.Seed,
 		PriorityMix:     mix,
 		Bursts:          s.Bursts,
+		Pipeline:        s.Pipeline,
 		Description:     s.Description,
 		CreatedAt:       s.CreatedAt,
 	})
@@ -112,6 +114,7 @@ func (s *Scenario) UnmarshalJSON(data []byte) error {
 		Seed:        wire.Seed,
 		PriorityMix: mix,
 		Bursts:      wire.Bursts,
+		Pipeline:    wire.Pipeline,
 		Description: wire.Description,
 		CreatedAt:   wire.CreatedAt,
 	}
@@ -174,4 +177,87 @@ func (r *Run) UnmarshalJSON(data []byte) error {
 
 func seconds(value float64) time.Duration {
 	return time.Duration(value * float64(time.Second))
+}
+
+// The pipeline on the wire. Durations are seconds, like every other duration
+// this API takes, so a scenario reads the same way throughout.
+type pipelineWire struct {
+	Sweep         triggerWire `json:"sweep"`
+	WindowSeconds float64     `json:"window_seconds"`
+	Pick          StageSpec   `json:"pick"`
+	Associate     SweepSpec   `json:"associate"`
+	Locate        StageSpec   `json:"locate"`
+}
+
+type triggerWire struct {
+	Kind            string        `json:"kind"`
+	EverySeconds    float64       `json:"every_seconds,omitempty"`
+	DeadlineSeconds float64       `json:"deadline_seconds,omitempty"`
+	MinSeconds      float64       `json:"min_seconds,omitempty"`
+	MaxSeconds      float64       `json:"max_seconds,omitempty"`
+	Pressure        *pressureWire `json:"pressure,omitempty"`
+}
+
+type pressureWire struct {
+	Backlog      int     `json:"backlog"`
+	FloorSeconds float64 `json:"floor_seconds,omitempty"`
+}
+
+// MarshalJSON renders a pipeline in the wire shape.
+func (p PipelineSpec) MarshalJSON() ([]byte, error) {
+	return json.Marshal(pipelineWire{
+		Sweep:         triggerWireOf(p.Sweep),
+		WindowSeconds: p.Window.Seconds(),
+		Pick:          p.Pick,
+		Associate:     p.Associate,
+		Locate:        p.Locate,
+	})
+}
+
+// UnmarshalJSON reads a pipeline from the wire shape.
+func (p *PipelineSpec) UnmarshalJSON(data []byte) error {
+	var wire pipelineWire
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	*p = PipelineSpec{
+		Sweep:     triggerSpecOf(wire.Sweep),
+		Window:    seconds(wire.WindowSeconds),
+		Pick:      wire.Pick,
+		Associate: wire.Associate,
+		Locate:    wire.Locate,
+	}
+	return nil
+}
+
+func triggerWireOf(t TriggerSpec) triggerWire {
+	wire := triggerWire{
+		Kind:            t.Kind,
+		EverySeconds:    t.Every.Seconds(),
+		DeadlineSeconds: t.Deadline.Seconds(),
+		MinSeconds:      t.Min.Seconds(),
+		MaxSeconds:      t.Max.Seconds(),
+	}
+	if t.Pressure != nil {
+		wire.Pressure = &pressureWire{
+			Backlog: t.Pressure.Backlog, FloorSeconds: t.Pressure.Floor.Seconds(),
+		}
+	}
+	return wire
+}
+
+func triggerSpecOf(wire triggerWire) TriggerSpec {
+	spec := TriggerSpec{
+		Kind:     wire.Kind,
+		Every:    seconds(wire.EverySeconds),
+		Deadline: seconds(wire.DeadlineSeconds),
+		Min:      seconds(wire.MinSeconds),
+		Max:      seconds(wire.MaxSeconds),
+	}
+	if wire.Pressure != nil {
+		spec.Pressure = &PressureSpec{
+			Backlog: wire.Pressure.Backlog, Floor: seconds(wire.Pressure.FloorSeconds),
+		}
+	}
+	return spec
 }

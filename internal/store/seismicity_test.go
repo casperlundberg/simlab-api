@@ -93,6 +93,17 @@ func TestEveryFieldOfAScenarioSurvivesTheDatabase(t *testing.T) {
 			Epicentre: &domain.Point{X: 410.5, Y: 220, Z: -615.25}, MainMagnitude: &mainMagnitude},
 		{At: 2 * time.Hour, Magnitude: 5},
 	}
+	saved.Pipeline = &domain.PipelineSpec{
+		Sweep: domain.TriggerSpec{
+			Kind: domain.TriggerAdaptive, Every: 2 * time.Minute, Deadline: 10 * time.Minute,
+			Min: 30 * time.Second, Max: 15 * time.Minute,
+			Pressure: &domain.PressureSpec{Backlog: 400, Floor: 45 * time.Second},
+		},
+		Window:    30 * time.Minute,
+		Pick:      domain.StageSpec{Priority: 25, Seconds: 14.5},
+		Associate: domain.SweepSpec{Priority: 100, Seconds: 1.126, PerLocate: 0.08},
+		Locate:    domain.StageSpec{Priority: 50, Seconds: 30.25},
+	}
 	if err := s.SaveScenario(ctx, saved); err != nil {
 		t.Fatalf("SaveScenario() = %v", err)
 	}
@@ -104,6 +115,8 @@ func TestEveryFieldOfAScenarioSurvivesTheDatabase(t *testing.T) {
 	saved.CreatedAt = read.CreatedAt
 	noZeroFields(t, "scenario", saved)
 	noZeroFields(t, "burst", saved.Bursts[0])
+	noZeroFields(t, "pipeline", *saved.Pipeline)
+	noZeroFields(t, "sweep trigger", saved.Pipeline.Sweep)
 	if !reflect.DeepEqual(saved, read) {
 		t.Errorf("the scenario changed in the database\n saved: %+v\n  read: %+v", saved, read)
 	}

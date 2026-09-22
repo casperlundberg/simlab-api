@@ -190,6 +190,27 @@ func (p *Planner) Configure(settings domain.IntentSettings) {
 	p.settings = settings
 }
 
+// Valued reports whether the mine currently believes event i matters enough to
+// wait for: it has been promoted, or it has been judged and kept rather than
+// relaxed.
+//
+// It is the mine's own estimate, and before an event has a location the mine
+// has usually judged nothing — so under estimates this is empty early, which is
+// exactly when a sweep policy would most like to know. That is a finding about
+// what a sparse array can support, not a gap to paper over: the oracle arm is
+// where the same question gets a truthful answer.
+func (p *Planner) Valued(i int) bool {
+	if i < 0 || i >= len(p.judged) {
+		return false
+	}
+	switch p.judged[i].state {
+	case domain.EventPromoted, domain.EventKept:
+		return true
+	default:
+		return false
+	}
+}
+
 // Plan judges every event with work outstanding at a moment, and returns the
 // updates that would put its jobs where intent wants them, and every event
 // whose judgement changed.

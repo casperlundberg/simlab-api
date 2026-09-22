@@ -314,8 +314,8 @@ func (s *Store) SaveMetrics(ctx context.Context, metrics domain.Metrics) error {
 			breach_rate, mean_wait_seconds, p95_wait_seconds, max_wait_seconds,
 			peak_queue_depth, local_executor_seconds, cloud_executor_seconds,
 			peak_local_executors, peak_cloud_executors, scaling_actions, cycles,
-			sla_breaches_as_submitted, jobs_reprioritised)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+			sla_breaches_as_submitted, jobs_reprioritised, sweeps, locates)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
 		ON CONFLICT (run_id) DO UPDATE SET
 			jobs_submitted = EXCLUDED.jobs_submitted, jobs_completed = EXCLUDED.jobs_completed,
 			sla_breaches = EXCLUDED.sla_breaches, breach_rate = EXCLUDED.breach_rate,
@@ -329,13 +329,14 @@ func (s *Store) SaveMetrics(ctx context.Context, metrics domain.Metrics) error {
 			peak_cloud_executors = EXCLUDED.peak_cloud_executors,
 			scaling_actions = EXCLUDED.scaling_actions, cycles = EXCLUDED.cycles,
 			sla_breaches_as_submitted = EXCLUDED.sla_breaches_as_submitted,
-			jobs_reprioritised = EXCLUDED.jobs_reprioritised`,
+			jobs_reprioritised = EXCLUDED.jobs_reprioritised,
+			sweeps = EXCLUDED.sweeps, locates = EXCLUDED.locates`,
 		metrics.RunID, metrics.JobsSubmitted, metrics.JobsCompleted, metrics.SLABreaches,
 		metrics.BreachRate, metrics.MeanWaitSeconds, metrics.P95WaitSeconds,
 		metrics.MaxWaitSeconds, metrics.PeakQueueDepth, metrics.LocalExecutorSeconds,
 		metrics.CloudExecutorSeconds, metrics.PeakLocalExecutors, metrics.PeakCloudExecutors,
 		metrics.ScalingActions, metrics.Cycles, metrics.SLABreachesAsSubmitted,
-		metrics.JobsReprioritised)
+		metrics.JobsReprioritised, metrics.Sweeps, metrics.Locates)
 	if err != nil {
 		return fmt.Errorf("saving the metrics of run %q: %w", metrics.RunID, err)
 	}
@@ -350,7 +351,8 @@ func (s *Store) Metrics(ctx context.Context, runID string) (domain.Metrics, erro
 			mean_wait_seconds, p95_wait_seconds, max_wait_seconds, peak_queue_depth,
 			local_executor_seconds, cloud_executor_seconds, peak_local_executors,
 			peak_cloud_executors, scaling_actions, cycles,
-			COALESCE(sla_breaches_as_submitted, sla_breaches), COALESCE(jobs_reprioritised, 0)
+			COALESCE(sla_breaches_as_submitted, sla_breaches), COALESCE(jobs_reprioritised, 0),
+			COALESCE(sweeps, 0), COALESCE(locates, 0)
 		FROM run_metrics WHERE run_id = $1`, runID,
 	).Scan(&metrics.RunID, &metrics.JobsSubmitted, &metrics.JobsCompleted,
 		&metrics.SLABreaches, &metrics.BreachRate, &metrics.MeanWaitSeconds,
@@ -358,7 +360,7 @@ func (s *Store) Metrics(ctx context.Context, runID string) (domain.Metrics, erro
 		&metrics.LocalExecutorSeconds, &metrics.CloudExecutorSeconds,
 		&metrics.PeakLocalExecutors, &metrics.PeakCloudExecutors,
 		&metrics.ScalingActions, &metrics.Cycles, &metrics.SLABreachesAsSubmitted,
-		&metrics.JobsReprioritised)
+		&metrics.JobsReprioritised, &metrics.Sweeps, &metrics.Locates)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Metrics{}, fmt.Errorf("%w: metrics for run %q", ErrNotFound, runID)
 	}

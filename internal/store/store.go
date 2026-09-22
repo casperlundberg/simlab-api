@@ -165,20 +165,29 @@ func (s *Store) SaveScenario(ctx context.Context, scenario domain.Scenario) erro
 		}
 		workforce = encoded
 	}
+	var pipeline any
+	if scenario.Pipeline != nil {
+		encoded, err := json.Marshal(scenario.Pipeline)
+		if err != nil {
+			return fmt.Errorf("encoding the pipeline: %w", err)
+		}
+		pipeline = encoded
+	}
 
 	_, err = s.pool.Exec(ctx, `
 		INSERT INTO scenarios (id, mine_id, name, duration_ms, job_seconds, seed,
-			priority_mix, bursts, description, pick_jitter_ms, workforce)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			priority_mix, bursts, description, pick_jitter_ms, workforce, pipeline)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		ON CONFLICT (id) DO UPDATE SET
 			mine_id = EXCLUDED.mine_id, name = EXCLUDED.name,
 			duration_ms = EXCLUDED.duration_ms, job_seconds = EXCLUDED.job_seconds,
 			seed = EXCLUDED.seed, priority_mix = EXCLUDED.priority_mix,
 			bursts = EXCLUDED.bursts, description = EXCLUDED.description,
-			pick_jitter_ms = EXCLUDED.pick_jitter_ms, workforce = EXCLUDED.workforce`,
+			pick_jitter_ms = EXCLUDED.pick_jitter_ms, workforce = EXCLUDED.workforce,
+			pipeline = EXCLUDED.pipeline`,
 		scenario.ID, scenario.MineID, scenario.Name, scenario.Duration.Milliseconds(),
 		scenario.JobSeconds, scenario.Seed, mix, bursts, scenario.Description,
-		float64(scenario.PickJitter)/float64(time.Millisecond), workforce)
+		float64(scenario.PickJitter)/float64(time.Millisecond), workforce, pipeline)
 	if err != nil {
 		return fmt.Errorf("saving scenario %q: %w", scenario.ID, err)
 	}
@@ -189,7 +198,7 @@ func (s *Store) SaveScenario(ctx context.Context, scenario domain.Scenario) erro
 func (s *Store) Scenario(ctx context.Context, id string) (domain.Scenario, error) {
 	return s.scanScenario(s.pool.QueryRow(ctx, `
 		SELECT id, mine_id, name, duration_ms, job_seconds, seed, priority_mix,
-			bursts, description, pick_jitter_ms, workforce, created_at
+			bursts, description, pick_jitter_ms, workforce, pipeline, created_at
 		FROM scenarios WHERE id = $1`, id), id)
 }
 
@@ -197,7 +206,7 @@ func (s *Store) Scenario(ctx context.Context, id string) (domain.Scenario, error
 func (s *Store) Scenarios(ctx context.Context, mineID string) ([]domain.Scenario, error) {
 	query := `
 		SELECT id, mine_id, name, duration_ms, job_seconds, seed, priority_mix,
-			bursts, description, pick_jitter_ms, workforce, created_at
+			bursts, description, pick_jitter_ms, workforce, pipeline, created_at
 		FROM scenarios`
 	args := []any{}
 	if mineID != "" {
@@ -255,11 +264,18 @@ func (s *Store) scanScenarioRow(row scannable) (domain.Scenario, error) {
 		bursts     []byte
 		jitterMs   float64
 		workforce  []byte
+		pipeline   []byte
 	)
 	if err := row.Scan(&scenario.ID, &scenario.MineID, &scenario.Name, &durationMs,
 		&scenario.JobSeconds, &scenario.Seed, &mix, &bursts,
-		&scenario.Description, &jitterMs, &workforce, &scenario.CreatedAt); err != nil {
+		&scenario.Description, &jitterMs, &workforce, &pipeline, &scenario.CreatedAt); err != nil {
 		return domain.Scenario{}, err
+	}
+	if pipeline != nil {
+		scenario.Pipeline = &domain.PipelineSpec{}
+		if err := json.Unmarshal(pipeline, scenario.Pipeline); err != nil {
+			return domain.Scenario{}, fmt.Errorf("reading the pipeline of %q: %w", scenario.ID, err)
+		}
 	}
 	if workforce != nil {
 		scenario.Workforce = &domain.Workforce{}

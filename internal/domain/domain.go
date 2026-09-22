@@ -159,6 +159,17 @@ type Scenario struct {
 	// default workforce, and a stated one of zeroes means nobody.
 	Workforce *Workforce `json:"workforce,omitempty"`
 
+	// Pipeline runs the mine's real three-stage workflow rather than one
+	// undifferentiated stream of jobs. Optional: nil generates picks alone at
+	// the priorities PriorityMix states, which is what every scenario
+	// recorded before the pipeline existed does.
+	//
+	// With one, PriorityMix and JobSeconds no longer decide what a job is
+	// worth or costs — each stage states its own — but they are still drawn
+	// from, so that a scenario with a pipeline and one without produce the
+	// same seismic events from the same seed and can be compared.
+	Pipeline *PipelineSpec `json:"pipeline,omitempty"`
+
 	// Seed makes a scenario reproducible. Two runs of the same scenario
 	// replay exactly the same jobs, which is what makes comparing two
 	// autoscaler settings a controlled experiment rather than an anecdote.
@@ -197,6 +208,11 @@ func (s Scenario) Validate() error {
 	}
 	if s.Workforce != nil {
 		problems = append(problems, s.Workforce.problems()...)
+	}
+	if s.Pipeline != nil {
+		if err := s.Pipeline.Validate(); err != nil {
+			problems = append(problems, err.Error())
+		}
 	}
 	if s.PickJitter < 0 {
 		problems = append(problems, fmt.Sprintf("pick_jitter_seconds must be >= 0, got %v",
@@ -441,4 +457,11 @@ type Metrics struct {
 
 	ScalingActions int `json:"scaling_actions"`
 	Cycles         int `json:"cycles"`
+
+	// Sweeps and Locates are the work the mine's own workflow submitted, on a
+	// scenario running one. They are the cost of how the pipeline is run: a
+	// policy that sweeps rarely produces fewer, larger sweeps, and one that
+	// sweeps eagerly re-locates the same events more often.
+	Sweeps  int `json:"sweeps"`
+	Locates int `json:"locates"`
 }

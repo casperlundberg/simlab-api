@@ -129,6 +129,9 @@ func TestEveryFieldOfTheMetricsSurvivesTheDatabase(t *testing.T) {
 
 		SLABreachesAsSubmitted: 1702,
 		JobsReprioritised:      5230,
+
+		Sweeps:  1180,
+		Locates: 9412,
 	}
 	noZeroFields(t, "metrics", metrics)
 

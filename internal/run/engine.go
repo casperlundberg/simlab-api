@@ -21,6 +21,7 @@ import (
 	"github.com/casperlundberg/simlab-api/internal/buildinfo"
 	"github.com/casperlundberg/simlab-api/internal/domain"
 	"github.com/casperlundberg/simlab-api/internal/intent"
+	"github.com/casperlundberg/simlab-api/internal/pipeline"
 	"github.com/casperlundberg/simlab-api/internal/queue"
 	"github.com/casperlundberg/simlab-api/internal/workload"
 )
@@ -189,6 +190,15 @@ func (e *Engine) simulate(ctx context.Context, spec Spec) (domain.Metrics, error
 	}
 	catalogue := workload.NewCatalogue(generated)
 
+	// With a workflow of its own, the mine decides when an event is located:
+	// having the picks to solve for one only means a locate *can* be run, and
+	// the location exists when that job finishes.
+	var workflow *pipeline.Pipeline
+	if spec.Scenario.Pipeline != nil {
+		workflow = pipeline.Of(*spec.Scenario.Pipeline, generated, spec.Scenario.Seed)
+		catalogue = catalogue.Deferred()
+	}
+
 	if err := e.createTarget(ctx, spec); err != nil {
 		return domain.Metrics{}, err
 	}
@@ -274,13 +284,35 @@ func (e *Engine) simulate(ctx context.Context, spec Spec) (domain.Metrics, error
 		// kinder to the autoscaler than reality is.
 		progress := simulator.Advance(elapsed, capacity.LocalReady+capacity.CloudReady)
 
+		// The workflow reads the completions first: it is what knows which of
+		// them were picks, and a sweep that finished in this interval submits
+		// its locates before the autoscaler is shown the queue they join.
+		finished := progress.Finished
+		var located []domain.SeismicEvent
+		if workflow != nil {
+			step, err := workflow.Advance(elapsed, finished, intents.planner.Valued)
+			if err != nil {
+				return metrics, fmt.Errorf("cycle %d: %w", sequence, err)
+			}
+			if err := simulator.Submit(step.Submit...); err != nil {
+				return metrics, fmt.Errorf("cycle %d: %w", sequence, err)
+			}
+			finished = step.Picks
+			if located, err = catalogue.Locate(elapsed, step.Located); err != nil {
+				return metrics, fmt.Errorf("cycle %d: %w", sequence, err)
+			}
+			metrics.Sweeps += stageCount(step.Submit, workload.StageAssociate)
+			metrics.Locates += stageCount(step.Submit, workload.StageLocate)
+		}
+
 		// Before the loop can end: the interval that drains the queue is the
 		// one that processes the last picks, and a location it produced but
 		// never recorded would leave an event unlocated for good.
-		located, err := catalogue.Observe(elapsed, progress.Finished)
+		changed, err := catalogue.Observe(elapsed, finished)
 		if err != nil {
 			return metrics, fmt.Errorf("cycle %d: %w", sequence, err)
 		}
+		located = append(located, changed...)
 		if len(located) > 0 {
 			if err := e.recorder.SaveSeismicEvents(ctx, spec.Run.ID, located); err != nil {
 				return metrics, err
@@ -589,6 +621,17 @@ func (e *Engine) applyIntent(ctx context.Context, runID string, sequence int, el
 		summary.ExemptByPriority = exempt
 	}
 	return summary, nil
+}
+
+// stageCount is how many of a workflow's submissions were of one stage.
+func stageCount(jobs []workload.Job, stage workload.Stage) int {
+	n := 0
+	for _, job := range jobs {
+		if job.Stage == stage {
+			n++
+		}
+	}
+	return n
 }
 
 func toCycle(runID string, sequence int, at time.Time,
