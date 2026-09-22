@@ -43,10 +43,12 @@ its true magnitude (`internal/hazard`). All three cases take:
 | `kinds` | all three | Whom decisions are made for: `person`, `crewed-vehicle`, `autonomous-vehicle`. |
 | `window_seconds` | 1800 | How long after an event its zone still matters — aftershocks, and rock the shaking loosened. **An assumption**, to be swept. |
 | `reaction_seconds` | 30 | How long before the moment it matters a unit has to be told, to act. **An assumption**, to be swept. |
+| `need` | `first-location` | What the decision waits on: `first-location`, any location of the event, or `warning`, the first location whose own zone at the level — widened by the allowance for location error — reaches the point that matters (where the unit would enter, or where it stands). A location too far out would not have told the mine the unit was in danger, however early it came; `warning` is where imperfect hypocentres (use case 2) cost a decision. |
 
 - **`turn-back`** (use case 1): a unit that enters an event's zone within the
   window, having been outside it when it happened, must have the event's first
-  location a reaction time before it enters. With `kinds` set to the machines it
+  location — or, with `need` set to `warning`, a location that puts the unit
+  in danger — a reaction time before it enters. With `kinds` set to the machines it
   is use case 10, protecting machines.
 - **`way-out`** (use case 3): a unit inside the zone when the event happens must
   have its first location a reaction time before it would have left on its own

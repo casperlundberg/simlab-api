@@ -34,6 +34,12 @@ type zoneParams struct {
 	// Also an assumption.
 	ReactionSeconds float64 `json:"reaction_seconds"`
 
+	// Need is what the decision waits on: "first-location", any location of
+	// the event, or "warning", a location whose own zone reaches the point
+	// that matters — a location too far out would not have told the mine this
+	// unit was in danger.
+	Need string `json:"need"`
+
 	level hazard.Level
 }
 
@@ -43,6 +49,7 @@ func defaultZone() zoneParams {
 		Kinds:           []string{domain.EntityPerson, domain.EntityCrewedVehicle, domain.EntityAutonomousVehicle},
 		WindowSeconds:   1800,
 		ReactionSeconds: 30,
+		Need:            "first-location",
 	}
 }
 
@@ -78,6 +85,9 @@ func readZone(kind string, params json.RawMessage) (zoneParams, error) {
 		problems = append(problems, fmt.Sprintf("window_seconds must be > 0, got %v: a zone that matters for "+
 			"no time at all asks no decision", p.WindowSeconds))
 	}
+	if p.Need != "first-location" && p.Need != "warning" {
+		problems = append(problems, fmt.Sprintf("need %q is not one of first-location, warning", p.Need))
+	}
 	if p.ReactionSeconds < 0 {
 		problems = append(problems, fmt.Sprintf("reaction_seconds must be >= 0, got %v", p.ReactionSeconds))
 	}
@@ -85,6 +95,15 @@ func readZone(kind string, params json.RawMessage) (zoneParams, error) {
 		return p, fmt.Errorf("parameters of %s: %s", kind, strings.Join(problems, "; "))
 	}
 	return p, nil
+}
+
+// need is what a decision about an event waits on, for a unit where it matters
+// most: where it would enter the zone, or where it stands in it.
+func (p zoneParams) need(event int, at domain.Point) Need {
+	if p.Need == "warning" {
+		return Warning{Event: event, At: at, Level: p.Level}
+	}
+	return FirstLocation{Event: event}
 }
 
 // radius is an event's true zone at the level, if its ground motion reaches
@@ -137,8 +156,9 @@ func (p zoneParams) entering(w World, visit func(event int, unit domain.Entity, 
 // ------------------------------------------------------------------ turn-back
 
 // TurnBack is use case 1: a unit heading into an event's zone is turned back
-// before it enters. The decision needs the event's first location, and stops
-// being useful a reaction time before the unit would have entered. Case 10,
+// before it enters. The decision waits on what need says — by default the
+// event's first location — and stops being useful a reaction time before the
+// unit would have entered. Case 10,
 // protecting machines, is this with kinds set to the machines.
 type TurnBack struct{ p zoneParams }
 
@@ -154,7 +174,7 @@ func (c TurnBack) Opportunities(w World) []Opportunity {
 	var out []Opportunity
 	c.p.entering(w, func(event int, unit domain.Entity, entry time.Duration) {
 		out = append(out, Opportunity{Case: c.Kind(), Event: event, Entity: unit.ID,
-			Need: FirstLocation{Event: event}, Opens: w.Events[event].Origin, Closes: entry - c.p.reaction()})
+			Need: c.p.need(event, unit.PositionAt(entry)), Opens: w.Events[event].Origin, Closes: entry - c.p.reaction()})
 	})
 	return out
 }
@@ -162,8 +182,8 @@ func (c TurnBack) Opportunities(w World) []Opportunity {
 // -------------------------------------------------------------------- way-out
 
 // WayOut is use case 3: a unit inside an event's zone when it happens is led
-// out by the safest way. The decision needs the event's first location, and is
-// useful until a reaction time before the unit would have left on its own —
+// out by the safest way. The decision waits on what need says, and is useful
+// until a reaction time before the unit would have left on its own —
 // or, if it would not have, until the window ends.
 type WayOut struct{ p zoneParams }
 
@@ -193,7 +213,7 @@ func (c WayOut) Opportunities(w World) []Opportunity {
 				leaves = until
 			}
 			out = append(out, Opportunity{Case: c.Kind(), Event: i, Entity: u.ID,
-				Need: FirstLocation{Event: i}, Opens: e.Origin, Closes: leaves - c.p.reaction()})
+				Need: c.p.need(i, u.PositionAt(e.Origin)), Opens: e.Origin, Closes: leaves - c.p.reaction()})
 		}
 	}
 	return out
@@ -203,8 +223,8 @@ func (c WayOut) Opportunities(w World) []Opportunity {
 
 // Reroute is use case 5: a unit whose way runs into an event's zone waits or
 // takes another path. That is only possible up to the last junction before the
-// zone, so the decision needs the event's first location a reaction time
-// before the unit passes it. A unit that has already passed its last junction
+// zone, so what the decision waits on must arrive a reaction time before the
+// unit passes it. A unit that has already passed its last junction
 // when the event happens has no other path, and the decision cannot be won.
 type Reroute struct{ p zoneParams }
 
@@ -242,7 +262,7 @@ func (c Reroute) Opportunities(w World) []Opportunity {
 			closes = last - c.p.reaction()
 		}
 		out = append(out, Opportunity{Case: c.Kind(), Event: event, Entity: unit.ID,
-			Need: FirstLocation{Event: event}, Opens: origin, Closes: closes})
+			Need: c.p.need(event, unit.PositionAt(entry)), Opens: origin, Closes: closes})
 	})
 	return out
 }

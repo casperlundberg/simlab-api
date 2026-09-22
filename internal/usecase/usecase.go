@@ -46,18 +46,25 @@ type Event struct {
 }
 
 // Record is what the mine had, and when: for each event, the moment it was
-// first located and the moment every one of its picks had been processed. Nil
-// for an event the mine never had.
+// first located and the moment every one of its picks had been processed, and
+// the locations it had then — where it took the event to be, and how far each
+// level of ground motion reached from there, allowance for error included.
+// Nil for an event the mine never had.
 type Record struct {
 	Located   []*time.Duration
 	Processed []*time.Duration
+	First     []*domain.Location
+	Final     []*domain.Location
 }
 
 // FromRun builds the world and the record from what a run stored. Event i is
 // the event of sequence i+1.
 func FromRun(events []domain.SeismicEvent, units []domain.Entity, tunnels []domain.Tunnel) (World, Record) {
 	w := World{Units: units, Tunnels: tunnels, Events: make([]Event, len(events))}
-	r := Record{Located: make([]*time.Duration, len(events)), Processed: make([]*time.Duration, len(events))}
+	r := Record{
+		Located: make([]*time.Duration, len(events)), Processed: make([]*time.Duration, len(events)),
+		First: make([]*domain.Location, len(events)), Final: make([]*domain.Location, len(events)),
+	}
 	for i, e := range events {
 		magnitude := 0.0
 		if e.Magnitude != nil {
@@ -65,6 +72,7 @@ func FromRun(events []domain.SeismicEvent, units []domain.Entity, tunnels []doma
 		}
 		w.Events[i] = Event{Origin: e.Origin, At: e.Truth, Magnitude: magnitude}
 		r.Located[i], r.Processed[i] = e.LocatedAt, e.ProcessedAt
+		r.First[i], r.Final[i] = e.Located, e.Final
 	}
 	return w, r
 }
@@ -90,6 +98,36 @@ type FinalLocation struct{ Event int }
 func (FinalLocation) Name() string { return "final-location" }
 
 func (n FinalLocation) MetAt(r Record) (time.Duration, bool) { return at(r.Processed, n.Event) }
+
+// Warning is a location that tells the mine what the decision is about: the
+// first of the event's locations whose own zone at the level — widened by the
+// allowance for how far the location may be out — reaches the point that
+// matters, where a unit would enter the zone or where it stands. A location
+// too far out to reach it says nothing about this unit, however early it came.
+type Warning struct {
+	Event int
+	At    domain.Point
+	Level string
+}
+
+func (Warning) Name() string { return "warning" }
+
+func (n Warning) MetAt(r Record) (time.Duration, bool) {
+	for _, candidate := range []struct {
+		when     []*time.Duration
+		location []*domain.Location
+	}{{r.Located, r.First}, {r.Processed, r.Final}} {
+		when, ok := at(candidate.when, n.Event)
+		if !ok || n.Event >= len(candidate.location) || candidate.location[n.Event] == nil {
+			continue
+		}
+		loc := candidate.location[n.Event]
+		if reach, ok := loc.Zones[n.Level]; ok && loc.At.DistanceTo(n.At) <= reach {
+			return when, true
+		}
+	}
+	return 0, false
+}
 
 func at(times []*time.Duration, i int) (time.Duration, bool) {
 	if i < 0 || i >= len(times) || times[i] == nil {

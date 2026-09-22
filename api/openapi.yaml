@@ -443,7 +443,9 @@ paths:
         junction on the way in). All take `level` (moderate, high or very-high:
         the ground motion that marks the zone, from the event's true
         magnitude; moderate by default), `kinds`, `window_seconds` (1800) and
-        `reaction_seconds` (30). An unknown case or parameter is refused.
+        `reaction_seconds` (30) and `need` (`first-location`, or `warning`: a
+        location whose own zone reaches the unit). An unknown case or parameter
+        is refused.
       requestBody:
         required: true
         content:
@@ -459,6 +461,12 @@ paths:
                     kinds: { type: array, items: { type: string, enum: [person, crewed-vehicle, autonomous-vehicle] } }
                     window_seconds: { type: number, exclusiveMinimum: 0 }
                     reaction_seconds: { type: number, minimum: 0 }
+                    need:
+                      type: string
+                      enum: [first-location, warning]
+                      description: |
+                        What a decision waits on: any location of the event, or the first
+                        location whose own zone reaches the point that matters.
               required: [kind]
       responses:
         "200":

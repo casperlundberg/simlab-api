@@ -26,7 +26,9 @@ the simulator will walk them.
   the information each tactical decision needed arrived before the decision
   stopped being useful. `turn-back`, `way-out` and `reroute`, over an event's
   true hazard zone; scored from what a run stored, so any recorded run can be
-  asked. See `docs/use-cases.md`.
+  asked. A decision waits on the event's first location, or — with `need` set
+  to `warning` — on the first location whose own zone reaches the unit, which is
+  where imperfect hypocentres cost a decision. See `docs/use-cases.md`.
 - `mineplan.Reach`: the ground within a distance of a point along the tunnels,
   held exactly to the graph's own route search by a property test.
 - Nothing else moves: with intent off, or protecting no people, a scenario

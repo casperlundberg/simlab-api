@@ -137,3 +137,51 @@ func TestParametersThatCouldNotMeanAnythingAreRefusedByName(t *testing.T) {
 		}
 	}
 }
+
+// ------------------------------------------------------------------ warning
+
+func location(x float64, moderate float64) *domain.Location {
+	return &domain.Location{At: domain.Point{X: x}, Zones: map[string]float64{"moderate": moderate}}
+}
+
+func TestAWarningIsTheFirstLocationWhoseZoneReachesWhereItMatters(t *testing.T) {
+	need := usecase.Warning{Event: 0, At: domain.Point{X: 100}, Level: "moderate"}
+	for _, tc := range []struct {
+		name         string
+		first, final *domain.Location
+		want         *time.Duration
+	}{
+		{"the first location's zone reaches it", location(20, 90), location(0, 50), seconds(30)},
+		{"only the final location's does", location(-200, 90), location(20, 90), seconds(80)},
+		{"neither does", location(-200, 90), location(-150, 90), nil},
+		{"no location at all", nil, nil, nil},
+	} {
+		record := usecase.Record{
+			Located: []*time.Duration{seconds(30)}, Processed: []*time.Duration{seconds(80)},
+			First: []*domain.Location{tc.first}, Final: []*domain.Location{tc.final},
+		}
+		met, ok := need.MetAt(record)
+		var got *time.Duration
+		if ok {
+			got = &met
+		}
+		if (got == nil) != (tc.want == nil) || (got != nil && *got != *tc.want) {
+			t.Errorf("%s: met at %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestACaseCanWaitForAWarningRatherThanAnyLocation(t *testing.T) {
+	for _, kind := range usecase.Kinds() {
+		w := drive(walker("person-01", domain.EntityPerson, 0), walker("person-02", domain.EntityPerson, 360))
+		for _, o := range one(t, kind, `{"need":"warning"}`, w) {
+			if o.Need.Name() != "warning" {
+				t.Errorf("%s: need %s, want warning", kind, o.Need.Name())
+			}
+		}
+		if _, err := usecase.New(kind, json.RawMessage(`{"need":"clairvoyance"}`)); err == nil ||
+			!strings.Contains(err.Error(), "need") {
+			t.Errorf("%s: an unknown need was not refused by name: %v", kind, err)
+		}
+	}
+}
