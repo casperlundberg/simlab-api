@@ -102,6 +102,7 @@ type Options struct {
 
 type server struct {
 	Options
+	views *viewCache
 }
 
 // route is one endpoint, in a table so the OpenAPI document can be checked
@@ -144,6 +145,7 @@ var routes = []route{
 	{http.MethodGet, "/api/runs/{id}/layout", false, func(s *server) http.HandlerFunc { return s.runLayout }},
 	{http.MethodGet, "/api/runs/{id}/seismicity", false, func(s *server) http.HandlerFunc { return s.runSeismicity }},
 	{http.MethodGet, "/api/runs/{id}/entities", false, func(s *server) http.HandlerFunc { return s.runEntities }},
+	{http.MethodGet, "/api/runs/{id}/ground", false, func(s *server) http.HandlerFunc { return s.runGround }},
 	{http.MethodGet, "/api/runs/{id}/intent", false, func(s *server) http.HandlerFunc { return s.getRunIntent }},
 	{http.MethodPatch, "/api/runs/{id}/intent", false, func(s *server) http.HandlerFunc { return s.patchRunIntent }},
 	{http.MethodGet, "/api/runs/{id}/events", false, func(s *server) http.HandlerFunc { return s.runEvents }},
@@ -173,7 +175,7 @@ func New(options Options) http.Handler {
 	if options.Logger == nil {
 		options.Logger = slog.Default()
 	}
-	s := &server{Options: options}
+	s := &server{Options: options, views: newViewCache()}
 
 	mux := http.NewServeMux()
 	for _, r := range routes {

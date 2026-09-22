@@ -380,6 +380,49 @@ paths:
                 properties:
                   entities: { type: array, items: { $ref: "#/components/schemas/Entity" } }
 
+  /api/runs/{id}/ground:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    get:
+      tags: [runs]
+      summary: The ground a run's planner protects at a moment
+      description: |
+        For each protected unit, where it is or could be over the lookahead,
+        as the knowledge asked for reads it — served from the views the run
+        engine decides from, so a page drawing it draws what intent decided
+        from. Under `estimate`, what the mine reads: each vehicle along its
+        planned route, each person along every stretch of tunnel they could
+        walk to. Under `truth`, every unit's true route. The lookahead, who is
+        protected and the knowledge are parameters rather than read from the
+        run, because intent can change mid-run; each is checked as an intent
+        patch is, and defaults to the default intent's.
+      parameters:
+        - { name: at_seconds, in: query, required: true, schema: { type: number, minimum: 0 } }
+        - { name: lookahead_seconds, in: query, schema: { type: number, minimum: 0 } }
+        - name: protect
+          in: query
+          description: Comma-separated kinds of unit.
+          schema: { type: string, example: "person,crewed-vehicle,autonomous-vehicle" }
+        - { name: knowledge, in: query, schema: { type: string, enum: [estimate, truth] } }
+      responses:
+        "200":
+          description: The protected ground, several paths for a unit that could go several ways.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  at_seconds: { type: number }
+                  knowledge: { type: string }
+                  ground:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        entity: { type: string }
+                        points: { type: array, items: { $ref: "#/components/schemas/Point" } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/runs/{id}/intent:
     parameters: [{ $ref: "#/components/parameters/ID" }]
     get:

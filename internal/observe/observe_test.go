@@ -269,3 +269,22 @@ func samePoints(a, b []domain.Point) bool {
 	}
 	return true
 }
+
+// ------------------------------------------------------------------ views
+
+func TestTheOracleReadsTheTruthAndEveryOtherKnowledgeTheMinesOwnView(t *testing.T) {
+	person := walking("person-01", domain.Point{}, domain.Point{X: 400})
+	views := observe.ViewsOf([]domain.Entity{person}, crossing(), 1)
+
+	truth := views.For(domain.KnowledgeTruth).Reach(0, 100*time.Second, everyone)
+	if len(truth) != 1 {
+		t.Errorf("the oracle's reach is %d paths, want the one true route", len(truth))
+	}
+	for _, knowledge := range []domain.IntentKnowledge{domain.KnowledgeEstimate, ""} {
+		mine := views.For(knowledge).Reach(0, 100*time.Second, everyone)
+		if d := distance(mine, domain.Point{Y: 100}); d > 1e-9 {
+			t.Errorf("knowledge %q: 100 m up the other drive is %v m from the reach; the mine's own "+
+				"view does not know which way the person will walk", knowledge, d)
+		}
+	}
+}

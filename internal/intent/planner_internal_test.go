@@ -98,7 +98,7 @@ func TestSkippingSettledEventsDecidesExactlyWhatJudgingEverythingDoes(t *testing
 
 // truthful gives the planner the true tracks as the mine's view, so a test of
 // the planner's own logic is not also a test of what a mine can read.
-func truthful(w workload.Workload) Views {
+func truthful(w workload.Workload) observe.Views {
 	tracks := observe.NewTracks(w.Entities)
-	return Views{Mine: tracks, Oracle: tracks}
+	return observe.Views{Mine: tracks, Oracle: tracks}
 }

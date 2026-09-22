@@ -43,7 +43,7 @@ type Sighting struct {
 type Planner struct {
 	jobs      []workload.Job
 	events    []eventWork
-	views     Views
+	views     observe.Views
 	catalogue *workload.Catalogue
 	settings  domain.IntentSettings
 
@@ -143,18 +143,10 @@ type Plan struct {
 	Transitions []Transition
 }
 
-// Views is what the planner may know about where people and vehicles are:
-// the mine's own reading, and the simulator's truth, which only the oracle arm
-// (knowledge "truth") decides from. Both are kept because knowledge can change
-// while a run is in flight. Which implementations they are is decided where the
-// run is wired; the planner knows them only as observe.Whereabouts.
-type Views struct {
-	Mine   observe.Whereabouts
-	Oracle observe.Whereabouts
-}
-
-// New prepares a planner for a workload, with nothing asked for yet.
-func New(w workload.Workload, catalogue *workload.Catalogue, settings domain.IntentSettings, views Views) *Planner {
+// New prepares a planner for a workload, with nothing asked for yet. Views is
+// what it may know of where people and vehicles are; which implementations
+// they are is decided where the run is wired.
+func New(w workload.Workload, catalogue *workload.Catalogue, settings domain.IntentSettings, views observe.Views) *Planner {
 	sensors := map[string]domain.Point{}
 	for _, sensor := range w.Layout.Sensors {
 		sensors[sensor.ID] = sensor.At
@@ -304,10 +296,7 @@ func (p *Planner) sightingAt(i int) domain.Point {
 
 // whereabouts is the view the current knowledge decides from.
 func (p *Planner) whereabouts() observe.Whereabouts {
-	if p.settings.Knowledge == domain.KnowledgeTruth {
-		return p.views.Oracle
-	}
-	return p.views.Mine
+	return p.views.For(p.settings.Knowledge)
 }
 
 // assess judges one event against the protected paths.

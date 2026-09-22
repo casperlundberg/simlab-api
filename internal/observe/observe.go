@@ -49,8 +49,8 @@ type Position struct {
 // Path is ground a unit is on or could be on: straight lines between points.
 // A single point is ground too — a unit that is only known to be there.
 type Path struct {
-	Entity string
-	Points []domain.Point
+	Entity string         `json:"entity"`
+	Points []domain.Point `json:"points"`
 }
 
 // DistanceTo is how close the path comes to a point, in metres.

@@ -48,16 +48,13 @@ func junction(magnitude float64, at domain.Point) workload.Workload {
 	return w
 }
 
-func truthful(w workload.Workload) intent.Views {
+func truthful(w workload.Workload) observe.Views {
 	tracks := observe.NewTracks(w.Entities)
-	return intent.Views{Mine: tracks, Oracle: tracks}
+	return observe.Views{Mine: tracks, Oracle: tracks}
 }
 
-func realistic(w workload.Workload) intent.Views {
-	return intent.Views{
-		Mine:   observe.NewPositioned(w.Entities, w.Layout.Tunnels, workload.WalkingSpeed),
-		Oracle: observe.NewTracks(w.Entities),
-	}
+func realistic(w workload.Workload) observe.Views {
+	return observe.ViewsOf(w.Entities, w.Layout.Tunnels, workload.WalkingSpeed)
 }
 
 // 180 m up the northern drive, a Nuttli 0 event: its moderate zone, widened by
@@ -66,7 +63,7 @@ func realistic(w workload.Workload) intent.Views {
 // taken runs straight through it.
 var upTheNorthDrive = domain.Point{X: 500, Y: 680, Z: -500}
 
-func judged(t *testing.T, w workload.Workload, s domain.IntentSettings, views intent.Views) domain.IntentTransition {
+func judged(t *testing.T, w workload.Workload, s domain.IntentSettings, views observe.Views) domain.IntentTransition {
 	t.Helper()
 	c := workload.NewCatalogue(w)
 	// Enough picks to locate it, with work left for intent to order. Five, not

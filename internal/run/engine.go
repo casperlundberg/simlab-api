@@ -252,10 +252,7 @@ func (e *Engine) simulate(ctx context.Context, spec Spec) (domain.Metrics, error
 	}
 	// What the planner may know of where people and vehicles are: what the
 	// mine's own systems read, and the simulator's truth for the oracle arm.
-	views := intent.Views{
-		Mine:   observe.NewPositioned(generated.Entities, generated.Layout.Tunnels, workload.WalkingSpeed),
-		Oracle: observe.NewTracks(generated.Entities),
-	}
+	views := observe.ViewsOf(generated.Entities, generated.Layout.Tunnels, workload.WalkingSpeed)
 	intents := newIntentLoop(runIntent, control, intent.New(generated, catalogue, runIntent.Settings, views))
 	interval := spec.Run.DecisionInterval
 	start := spec.Run.SimulatedStart

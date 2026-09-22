@@ -18,6 +18,10 @@ the simulator will walk them.
   one test: exact positions, a reach that covers everywhere the unit really
   goes, and a reach that moves no faster than the planner's skipping assumes.
   A test fails if the planner's own code reads a track.
+- `GET /api/runs/{id}/ground` serves the ground the planner protects at a
+  moment, under either knowledge, from the same views the run engine builds
+  (`observe.ViewsOf`), so a page draws what intent decided from instead of
+  recomputing it.
 - `mineplan.Reach`: the ground within a distance of a point along the tunnels,
   held exactly to the graph's own route search by a property test.
 - Nothing else moves: with intent off, or protecting no people, a scenario
