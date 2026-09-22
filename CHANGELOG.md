@@ -22,6 +22,11 @@ the simulator will walk them.
   moment, under either knowledge, from the same views the run engine builds
   (`observe.ViewsOf`), so a page draws what intent decided from instead of
   recomputing it.
+- **Use cases** (`internal/usecase`, `POST /api/runs/{id}/use-cases`): whether
+  the information each tactical decision needed arrived before the decision
+  stopped being useful. `turn-back`, `way-out` and `reroute`, over an event's
+  true hazard zone; scored from what a run stored, so any recorded run can be
+  asked. See `docs/use-cases.md`.
 - `mineplan.Reach`: the ground within a distance of a point along the tunnels,
   held exactly to the graph's own route search by a property test.
 - Nothing else moves: with intent off, or protecting no people, a scenario

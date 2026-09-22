@@ -103,6 +103,14 @@ hour the sampling noise is wider than most effects worth testing, so the
 existing tests raise the background rate rather than widen their tolerances
 until they prove nothing.
 
+## Adding a use case
+
+A use case scores recorded runs for one kind of tactical decision
+(`internal/usecase`, served at `POST /api/runs/{id}/use-cases`). A new one is a
+type implementing `usecase.Case` and one line in its registry; the contract
+test every registered case must keep then runs against it on its own.
+[`use-cases.md`](use-cases.md) has the cases, what each assumes, and the steps.
+
 ## Conventions
 
 - **Tests first**, named as sentences about behaviour.

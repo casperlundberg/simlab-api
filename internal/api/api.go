@@ -146,6 +146,7 @@ var routes = []route{
 	{http.MethodGet, "/api/runs/{id}/seismicity", false, func(s *server) http.HandlerFunc { return s.runSeismicity }},
 	{http.MethodGet, "/api/runs/{id}/entities", false, func(s *server) http.HandlerFunc { return s.runEntities }},
 	{http.MethodGet, "/api/runs/{id}/ground", false, func(s *server) http.HandlerFunc { return s.runGround }},
+	{http.MethodPost, "/api/runs/{id}/use-cases", false, func(s *server) http.HandlerFunc { return s.scoreUseCase }},
 	{http.MethodGet, "/api/runs/{id}/intent", false, func(s *server) http.HandlerFunc { return s.getRunIntent }},
 	{http.MethodPatch, "/api/runs/{id}/intent", false, func(s *server) http.HandlerFunc { return s.patchRunIntent }},
 	{http.MethodGet, "/api/runs/{id}/events", false, func(s *server) http.HandlerFunc { return s.runEvents }},

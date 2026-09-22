@@ -423,6 +423,79 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/runs/{id}/use-cases:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    post:
+      tags: [runs]
+      summary: Score a run for a use case
+      description: |
+        Every decision the case would have had to make in the run — whom it was
+        for, which event it waited on, when it opened and when it stopped being
+        useful — and whether what it needed arrived in time. Computed from what
+        the run stored and changing nothing, so any case can be asked of any
+        run, including one recorded before the case existed.
+
+        Cases: `turn-back` (a unit heading into an event's true zone is told
+        before it enters, less its reaction time; with `kinds` set to the
+        machines, protecting machines), `way-out` (a unit inside the zone when
+        it happens is led out before it would have left on its own) and
+        `reroute` (a unit whose way runs into the zone is told before the last
+        junction on the way in). All take `level` (moderate, high or very-high:
+        the ground motion that marks the zone, from the event's true
+        magnitude; moderate by default), `kinds`, `window_seconds` (1800) and
+        `reaction_seconds` (30). An unknown case or parameter is refused.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                kind: { type: string, enum: [reroute, turn-back, way-out] }
+                params:
+                  type: object
+                  properties:
+                    level: { type: string, enum: [moderate, high, very-high] }
+                    kinds: { type: array, items: { type: string, enum: [person, crewed-vehicle, autonomous-vehicle] } }
+                    window_seconds: { type: number, exclusiveMinimum: 0 }
+                    reaction_seconds: { type: number, minimum: 0 }
+              required: [kind]
+      responses:
+        "200":
+          description: The decisions, how each went, and how they went together.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  kind: { type: string }
+                  params: { type: object, description: The parameters used, defaults filled in. }
+                  summary:
+                    type: object
+                    properties:
+                      opportunities: { type: integer }
+                      in_time: { type: integer }
+                      never: { type: integer, description: Decisions whose need was never met. }
+                      unwinnable: { type: integer, description: Decisions that closed no later than they opened. }
+                      in_time_share: { type: number, nullable: true }
+                      latency_p50_seconds: { type: number, nullable: true }
+                      latency_p95_seconds: { type: number, nullable: true }
+                      slack_p50_seconds: { type: number, nullable: true }
+                  outcomes:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        event: { type: integer, description: The event's sequence. }
+                        entity: { type: string }
+                        need: { type: string, enum: [first-location, final-location] }
+                        opens_seconds: { type: number }
+                        closes_seconds: { type: number }
+                        met_at_seconds: { type: number, nullable: true }
+                        in_time: { type: boolean }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/runs/{id}/intent:
     parameters: [{ $ref: "#/components/parameters/ID" }]
     get:

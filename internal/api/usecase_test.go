@@ -1,0 +1,87 @@
+package api_test
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"strings"
+	"testing"
+
+	"github.com/casperlundberg/simlab-api/internal/usecase"
+)
+
+type useCaseBody struct {
+	Kind     string            `json:"kind"`
+	Params   json.RawMessage   `json:"params"`
+	Summary  json.RawMessage   `json:"summary"`
+	Outcomes []json.RawMessage `json:"outcomes"`
+}
+
+// A use case's score is a pure function of what a run stored, so the endpoint
+// has to give exactly what scoring the stored run directly gives.
+func TestARunIsScoredForAUseCaseFromWhatItRecorded(t *testing.T) {
+	f := newFixture(t)
+	runID := completedRun(t, f)
+	ctx := context.Background()
+	events, err := f.store.SeismicEvents(ctx, runID, 0, 20000)
+	if err != nil {
+		t.Fatalf("SeismicEvents() = %v", err)
+	}
+	entities, _ := f.store.Entities(ctx, runID)
+	layout, _ := f.store.RunLayout(ctx, runID)
+	world, record := usecase.FromRun(events, entities, layout.Tunnels)
+
+	for _, kind := range usecase.Kinds() {
+		params := `{"level":"moderate","window_seconds":3600}`
+		resp := f.do(t, http.MethodPost, "/api/runs/"+runID+"/use-cases",
+			map[string]any{"kind": kind, "params": json.RawMessage(params)})
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			t.Fatalf("%s: POST use-cases = %d: %s", kind, resp.StatusCode, body)
+		}
+		var got useCaseBody
+		if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+			t.Fatalf("decoding: %v", err)
+		}
+		resp.Body.Close()
+
+		c, err := usecase.New(kind, json.RawMessage(params))
+		if err != nil {
+			t.Fatalf("New() = %v", err)
+		}
+		outcomes := usecase.Score(c.Opportunities(world), record)
+		wantSummary, _ := json.Marshal(usecase.Summarise(outcomes))
+		wantParams, _ := json.Marshal(c.Params())
+		if got.Kind != kind || string(got.Summary) != string(wantSummary) || string(got.Params) != string(wantParams) {
+			t.Errorf("%s: served %s with %s, want %s with %s", kind, got.Summary, got.Params, wantSummary, wantParams)
+		}
+		if len(got.Outcomes) != len(outcomes) {
+			t.Errorf("%s: %d outcomes served, %d scored", kind, len(got.Outcomes), len(outcomes))
+		}
+	}
+}
+
+func TestAUseCaseRequestThatCannotBeAnsweredSaysWhy(t *testing.T) {
+	f := newFixture(t)
+	runID := completedRun(t, f)
+	for body, want := range map[string]string{
+		`{"kind":"fortune-telling"}`:                            "turn-back",
+		`{"kind":"turn-back","params":{"level":"cataclysmic"}}`: "level",
+		`{"kind":"turn-back","params":{"crystal_ball":1}}`:      "crystal_ball",
+		`{"params":{}}`: "kind",
+	} {
+		resp := f.do(t, http.MethodPost, "/api/runs/"+runID+"/use-cases", json.RawMessage(body))
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: status %d, want 400", body, resp.StatusCode)
+			continue
+		}
+		if message, _ := decodeBody(t, resp)["error"].(string); !strings.Contains(message, want) {
+			t.Errorf("%s: error %q does not mention %s", body, message, want)
+		}
+	}
+	resp := f.do(t, http.MethodPost, "/api/runs/no-such-run/use-cases", json.RawMessage(`{"kind":"turn-back"}`))
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("a run that does not exist: status %d, want 404", resp.StatusCode)
+	}
+}
