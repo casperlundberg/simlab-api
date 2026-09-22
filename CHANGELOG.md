@@ -34,7 +34,11 @@ the simulator will walk them.
   runs through `runner.Store`, and the HTTP handlers take a store, a manager and
   an autoscaler as interfaces split by what they are for (`api/ports.go`). Only
   the composition root knows the store is Postgres — now a test — and "not
-  found" is the domain's own error. No behaviour changes.
+  found" is the domain's own error. The planner takes the work as the mine
+  sees it (`domain.Work`: priorities, and each event's triggers), its catalogue
+  through an interface, and the oracle's truth as an explicit input, so it no
+  longer imports the package that generates the world — also a test now. No
+  behaviour changes.
 - **The layering is enforced** (`internal/arch`), as autoscaler's is: every
   package's imports against a table, and the invariants that matter named —
   the simulated mine never imports the network or the database, what decides

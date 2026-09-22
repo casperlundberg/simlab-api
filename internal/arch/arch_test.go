@@ -36,9 +36,10 @@ var mayImport = map[string][]string{
 	"internal/queue":        {"internal/domain", "internal/orchestrator", "internal/workload"},
 	"internal/pipeline":     {"internal/domain", "internal/seismic", "internal/workload"},
 	"internal/observe":      {"internal/domain", "internal/mineplan"},
-	// Debt: workload is both the jobs intent orders and the world's truth;
-	// splitting the job vocabulary out of it removes this.
-	"internal/intent":  {"internal/domain", "internal/hazard", "internal/observe", "internal/orchestrator", "internal/seismic", "internal/workload"},
+	// What the mine decides. It takes the work as the mine sees it
+	// (domain.Work), a catalogue and the views through interfaces of its own,
+	// and the oracle's truth as an input — never the world that generated them.
+	"internal/intent":  {"internal/domain", "internal/hazard", "internal/observe", "internal/orchestrator", "internal/seismic"},
 	"internal/usecase": {"internal/domain", "internal/hazard", "internal/mineplan"},
 
 	// Adapters to the outside.
@@ -162,6 +163,15 @@ func TestTheSimulatedMineKnowsNothingOfTheNetworkOrTheDatabase(t *testing.T) {
 				t.Errorf("%s imports %s: the simulated mine has learned about the outside", pkg, imported)
 			}
 		}
+	}
+}
+
+// What decides never imports what generates the world: the planner is handed
+// the work as the mine sees it and reads the truth only as the oracle's input,
+// so "intent never reads the truth" is an import rule, not a hope.
+func TestWhatDecidesNeverImportsTheWorldsGenerator(t *testing.T) {
+	if contains(ours(t)["internal/intent"], "internal/workload") {
+		t.Error("internal/intent imports internal/workload, where the world's truth is generated")
 	}
 }
 

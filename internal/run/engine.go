@@ -272,7 +272,7 @@ func (e *Engine) simulate(ctx context.Context, spec Spec) (domain.Metrics, error
 	// What the planner may know of where people and vehicles are: what the
 	// mine's own systems read, and the simulator's truth for the oracle arm.
 	views := observe.ViewsOf(generated.Entities, generated.Layout.Tunnels, workload.WalkingSpeed)
-	intents := newIntentLoop(runIntent, control, intent.New(generated, catalogue, runIntent.Settings, views))
+	intents := newIntentLoop(runIntent, control, intent.New(generated.Work(), catalogue, oracle(generated), runIntent.Settings, views))
 	interval := spec.Run.DecisionInterval
 	start := spec.Run.SimulatedStart
 	if start.IsZero() {
@@ -644,6 +644,18 @@ func (e *Engine) applyIntent(ctx context.Context, runID string, sequence int, el
 		summary.ExemptByPriority = exempt
 	}
 	return summary, nil
+}
+
+// oracle is the truth the planner's oracle arm is given: where each event
+// really was, and how large. Handed over here, where the run is wired, so the
+// planner holds the truth only as an input it is told to read under one
+// knowledge, never by reaching into the world.
+func oracle(w workload.Workload) []intent.Sighting {
+	out := make([]intent.Sighting, len(w.Events))
+	for i, e := range w.Events {
+		out[i] = intent.Sighting{At: e.Truth, Magnitude: e.Magnitude, Basis: intent.BasisTruth}
+	}
+	return out
 }
 
 // stageCount is how many of a workflow's submissions were of one stage.

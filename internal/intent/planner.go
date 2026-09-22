@@ -9,7 +9,6 @@ import (
 	"github.com/casperlundberg/simlab-api/internal/observe"
 	"github.com/casperlundberg/simlab-api/internal/orchestrator"
 	"github.com/casperlundberg/simlab-api/internal/seismic"
-	"github.com/casperlundberg/simlab-api/internal/workload"
 )
 
 // What an event was judged from.
@@ -41,11 +40,11 @@ type Sighting struct {
 //
 // Not safe for concurrent use; a run plans from one goroutine.
 type Planner struct {
-	jobs      []workload.Job
-	events    []eventWork
-	views     observe.Views
-	catalogue *workload.Catalogue
-	settings  domain.IntentSettings
+	priorities []domain.Priority
+	events     []eventWork
+	views      observe.Views
+	catalogue  Catalogue
+	settings   domain.IntentSettings
 
 	// truths is the simulator's ground truth, one per event. Read only under
 	// KnowledgeTruth, the oracle arm, and by nothing else here.
@@ -143,17 +142,27 @@ type Plan struct {
 	Transitions []Transition
 }
 
-// New prepares a planner for a workload, with nothing asked for yet. Views is
-// what it may know of where people and vehicles are; which implementations
-// they are is decided where the run is wired.
-func New(w workload.Workload, catalogue *workload.Catalogue, settings domain.IntentSettings, views observe.Views) *Planner {
-	sensors := map[string]domain.Point{}
-	for _, sensor := range w.Layout.Sensors {
-		sensors[sensor.ID] = sensor.At
-	}
+// Catalogue is what the mine has of its events so far: how many of an event's
+// picks are still to be processed, the location it has for it, and whether a
+// job has finished. The planner orders work from this and never from the
+// events themselves.
+type Catalogue interface {
+	Remaining(event int) int
+	Location(event int) *domain.Location
+	Finished(id domain.JobID) bool
+}
 
+// New prepares a planner, with nothing asked for yet.
+//
+// Work is the processing as the mine sees it before any is done; the catalogue
+// is what it learns as it goes; views are what it may know of where people and
+// vehicles are. Oracle is the one piece of truth it holds — where each event
+// really was, and how large — read only under knowledge "truth", the arm that
+// bounds what ordering by location could achieve. Which implementations these
+// are, and where they come from, is decided where the run is wired.
+func New(work domain.Work, catalogue Catalogue, oracle []Sighting, settings domain.IntentSettings, views observe.Views) *Planner {
 	p := &Planner{
-		jobs:       w.Jobs,
+		priorities: work.Priorities,
 		views:      views,
 		catalogue:  catalogue,
 		settings:   settings,
@@ -161,23 +170,16 @@ func New(w workload.Workload, catalogue *workload.Catalogue, settings domain.Int
 		// The faster of the two, so skipping stays sound whichever knowledge
 		// the settings switch to mid-run.
 		speed:     math.Max(views.Mine.Speed(), views.Oracle.Speed()),
-		events:    make([]eventWork, len(w.Events)),
-		truths:    make([]Sighting, len(w.Events)),
-		requested: make([]request, len(w.Jobs)),
-		judged:    make([]judgement, len(w.Events)),
+		events:    make([]eventWork, len(work.Events)),
+		truths:    oracle,
+		requested: make([]request, len(work.Priorities)),
+		judged:    make([]judgement, len(work.Events)),
 	}
-	for i, event := range w.Events {
-		triggers := make([]domain.Point, 0, len(event.Picks))
-		for _, pick := range event.Picks {
-			if at, ok := sensors[pick.SensorID]; ok {
-				triggers = append(triggers, at)
-			}
-		}
-		p.events[i] = eventWork{origin: event.Origin, first: event.FirstJob, picks: len(event.Picks), triggers: triggers}
-		p.truths[i] = Sighting{At: event.Truth, Magnitude: event.Magnitude, Basis: BasisTruth}
+	for i, event := range work.Events {
+		p.events[i] = eventWork{origin: event.Origin, first: event.FirstJob, picks: event.Picks, triggers: event.Triggers}
 	}
-	for i, job := range w.Jobs {
-		p.requested[i] = request{priority: job.Priority}
+	for i, priority := range work.Priorities {
+		p.requested[i] = request{priority: priority}
 	}
 	return p
 }
@@ -365,6 +367,11 @@ func (p *Planner) strikeOf(i int, from domain.Point) struck {
 func (p *Planner) sight(i int) (Sighting, bool) {
 	s := p.settings
 	if s.Knowledge == domain.KnowledgeTruth {
+		// The oracle knows every event it was given the truth of, and nothing
+		// else: one it was not given is unknown, never guessed at.
+		if i >= len(p.truths) {
+			return Sighting{}, false
+		}
 		return p.truths[i], true
 	}
 
@@ -435,7 +442,7 @@ func (p *Planner) request(plan *Plan, i int, at time.Duration, state string) {
 		if p.catalogue.Finished(id) {
 			continue
 		}
-		submitted := p.jobs[id].Priority
+		submitted := p.priorities[id]
 		have := p.requested[id]
 		want := request{priority: submitted, moved: have.moved}
 		var class domain.IntentClass
@@ -479,7 +486,7 @@ func (p *Planner) close(i int) {
 	event := p.events[i]
 	for k := 0; k < event.picks; k++ {
 		id := event.first + domain.JobID(k)
-		if p.requested[id].displaces(p.jobs[id].Priority) {
+		if p.requested[id].displaces(p.priorities[id]) {
 			p.altered--
 		}
 	}

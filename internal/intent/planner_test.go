@@ -137,7 +137,7 @@ func TestTheHazardLevelsIntentNamesAreTheHazardModels(t *testing.T) {
 func TestAnEventReachingNoProtectedPathIsDecayedOnceItIsLocated(t *testing.T) {
 	w := mine(domain.PriorityAssociate)
 	c := workload.NewCatalogue(w)
-	p := intent.New(w, c, domain.DefaultIntent(), truthful(w))
+	p := newPlanner(w, c, domain.DefaultIntent(), truthful(w))
 
 	if plan := p.Plan(40 * time.Second); len(plan.Updates) != 0 || len(plan.Transitions) != 0 {
 		t.Fatalf("Plan() before any location = %+v, want nothing: there is nothing to judge from", plan)
@@ -176,7 +176,7 @@ func TestAnEventReachingNoProtectedPathIsDecayedOnceItIsLocated(t *testing.T) {
 func TestAPlanRepeatedWithNothingChangedAsksForNothing(t *testing.T) {
 	w := mine(domain.PriorityAssociate)
 	c := workload.NewCatalogue(w)
-	p := intent.New(w, c, domain.DefaultIntent(), truthful(w))
+	p := newPlanner(w, c, domain.DefaultIntent(), truthful(w))
 	process(t, w, c, 50*time.Second, farEvent, seismic.MinimumPicks)
 	p.Plan(50 * time.Second)
 
@@ -201,7 +201,7 @@ func TestUnderEstimatesIntentNeverReadsTheTruth(t *testing.T) {
 		c := workload.NewCatalogue(w)
 		// The picks were drawn from the original positions in both, so both
 		// catalogues solve the same locations.
-		p := intent.New(w, c, settings(`{"mode":"both","pre_location":true}`), truthful(w))
+		p := newPlanner(w, c, settings(`{"mode":"both","pre_location":true}`), truthful(w))
 		p.Plan(35 * time.Second)
 		for _, event := range []int{nearEvent, middleEvent, farEvent} {
 			process(t, w, c, 50*time.Second, event, seismic.MinimumPicks)
@@ -227,7 +227,7 @@ func TestUnderEstimatesIntentNeverReadsTheTruth(t *testing.T) {
 func TestUnderTruthIntentActsTheMomentAnEventHappens(t *testing.T) {
 	w := mine(domain.PriorityAssociate)
 	c := workload.NewCatalogue(w)
-	p := intent.New(w, c, settings(`{"knowledge":"truth"}`), truthful(w))
+	p := newPlanner(w, c, settings(`{"knowledge":"truth"}`), truthful(w))
 
 	plan := p.Plan(30 * time.Second)
 
@@ -244,8 +244,8 @@ func TestBeforeALocationTheFirstSensorToTriggerStandsInForOne(t *testing.T) {
 	w := mine(domain.PriorityAssociate)
 	c := workload.NewCatalogue(w)
 
-	without := intent.New(w, c, domain.DefaultIntent(), truthful(w)).Plan(30 * time.Second)
-	with := intent.New(w, c, settings(`{"pre_location":true}`), truthful(w)).Plan(30 * time.Second)
+	without := newPlanner(w, c, domain.DefaultIntent(), truthful(w)).Plan(30 * time.Second)
+	with := newPlanner(w, c, settings(`{"pre_location":true}`), truthful(w)).Plan(30 * time.Second)
 
 	if len(without.Updates) != 0 {
 		t.Errorf("without pre-location, Plan() = %+v before any pick is processed", without.Updates)
@@ -281,7 +281,7 @@ func TestSomethingTravellingTowardsAnEventProtectsIt(t *testing.T) {
 		{`{"knowledge":"truth","lookahead_seconds":300}`, domain.EventKept},
 	} {
 		w := mine(domain.PriorityAssociate, vehicle)
-		p := intent.New(w, workload.NewCatalogue(w), settings(tc.lookahead), truthful(w))
+		p := newPlanner(w, workload.NewCatalogue(w), settings(tc.lookahead), truthful(w))
 		tr, _ := stateOf(p.Plan(50*time.Second), farEvent)
 		if tr.State != tc.want {
 			t.Errorf("%s: far event = %+v, want %s", tc.lookahead, tr, tc.want)
@@ -295,7 +295,7 @@ func TestDecayedWorkIsRestoredWhenSomethingComesWithinReach(t *testing.T) {
 		{At: 120 * time.Second, Point: far}, {At: 24 * time.Hour, Point: far},
 	}}
 	w := mine(domain.PriorityAssociate, walker)
-	p := intent.New(w, workload.NewCatalogue(w), settings(`{"knowledge":"truth","lookahead_seconds":0}`), truthful(w))
+	p := newPlanner(w, workload.NewCatalogue(w), settings(`{"knowledge":"truth","lookahead_seconds":0}`), truthful(w))
 
 	if tr, _ := stateOf(p.Plan(30*time.Second), farEvent); tr.State != domain.EventDecayed {
 		t.Fatalf("far event at 30s = %+v, want decayed", tr)
@@ -314,7 +314,7 @@ func TestDecayedWorkIsRestoredWhenSomethingComesWithinReach(t *testing.T) {
 
 func TestBothPromotesWhatPutsSomeoneAtHighRiskAndDecaysWhatReachesNoOne(t *testing.T) {
 	w := mine(domain.PriorityLocate)
-	p := intent.New(w, workload.NewCatalogue(w), settings(`{"mode":"both","knowledge":"truth"}`), truthful(w))
+	p := newPlanner(w, workload.NewCatalogue(w), settings(`{"mode":"both","knowledge":"truth"}`), truthful(w))
 
 	plan := p.Plan(30 * time.Second)
 
@@ -350,7 +350,7 @@ func TestDecayNeverRaisesAJobAndPromotionNeverLowersOne(t *testing.T) {
 		{domain.PriorityPick, `{"mode":"both","knowledge":"truth","decay_to":50,"promote_to":100}`, nearEvent},
 	} {
 		w := mine(tc.submitted)
-		plan := intent.New(w, workload.NewCatalogue(w), settings(tc.patch), truthful(w)).Plan(30 * time.Second)
+		plan := newPlanner(w, workload.NewCatalogue(w), settings(tc.patch), truthful(w)).Plan(30 * time.Second)
 		for _, u := range plan.Updates {
 			if w.Jobs[u.JobID].Event != tc.moves {
 				t.Errorf("%s: moved job %d of event %d to %d", tc.patch, u.JobID, w.Jobs[u.JobID].Event, u.Priority)
@@ -364,7 +364,7 @@ func TestDecayNeverRaisesAJobAndPromotionNeverLowersOne(t *testing.T) {
 
 func TestOnlyProtectedKindsProtect(t *testing.T) {
 	w := mine(domain.PriorityAssociate, standing("autonomous-vehicle-01", domain.EntityAutonomousVehicle, person))
-	p := intent.New(w, workload.NewCatalogue(w), settings(`{"knowledge":"truth","protect":["person"]}`), truthful(w))
+	p := newPlanner(w, workload.NewCatalogue(w), settings(`{"knowledge":"truth","protect":["person"]}`), truthful(w))
 
 	plan := p.Plan(30 * time.Second)
 
@@ -375,7 +375,7 @@ func TestOnlyProtectedKindsProtect(t *testing.T) {
 
 func TestUpdatesCarryExemptionAndTheDeadlineOrigin(t *testing.T) {
 	w := mine(domain.PriorityLocate)
-	p := intent.New(w, workload.NewCatalogue(w), settings(
+	p := newPlanner(w, workload.NewCatalogue(w), settings(
 		`{"mode":"both","knowledge":"truth","burst_exempt":["decayed"],"deadline_from":"change"}`), truthful(w))
 
 	for _, u := range p.Plan(30 * time.Second).Updates {
@@ -393,7 +393,7 @@ func TestUpdatesCarryExemptionAndTheDeadlineOrigin(t *testing.T) {
 // the queue has to hear about it.
 func TestChangingOnlyExemptionUpdatesTheJobsItApplesTo(t *testing.T) {
 	w := mine(domain.PriorityAssociate)
-	p := intent.New(w, workload.NewCatalogue(w), settings(`{"knowledge":"truth"}`), truthful(w))
+	p := newPlanner(w, workload.NewCatalogue(w), settings(`{"knowledge":"truth"}`), truthful(w))
 	p.Plan(30 * time.Second)
 
 	p.Configure(settings(`{"knowledge":"truth","burst_exempt":["decayed"]}`))
@@ -414,7 +414,7 @@ func TestChangingOnlyExemptionUpdatesTheJobsItApplesTo(t *testing.T) {
 
 func TestSwitchingIntentOffPutsEverythingBack(t *testing.T) {
 	w := mine(domain.PriorityAssociate)
-	p := intent.New(w, workload.NewCatalogue(w), settings(`{"mode":"both","knowledge":"truth"}`), truthful(w))
+	p := newPlanner(w, workload.NewCatalogue(w), settings(`{"mode":"both","knowledge":"truth"}`), truthful(w))
 	p.Plan(30 * time.Second)
 
 	p.Configure(settings(`{"mode":"off"}`))
@@ -440,7 +440,7 @@ func TestSwitchingIntentOffPutsEverythingBack(t *testing.T) {
 
 func TestIntentThatStartsOffRecordsNothing(t *testing.T) {
 	w := mine(domain.PriorityAssociate)
-	p := intent.New(w, workload.NewCatalogue(w), domain.IntentOffSettings(), truthful(w))
+	p := newPlanner(w, workload.NewCatalogue(w), domain.IntentOffSettings(), truthful(w))
 
 	if plan := p.Plan(40 * time.Second); len(plan.Updates) != 0 || len(plan.Transitions) != 0 {
 		t.Errorf("Plan() = %+v, want nothing at all with intent off", plan)
@@ -455,7 +455,7 @@ func TestRestoredWorkCanBeExempt(t *testing.T) {
 		{At: 120 * time.Second, Point: far}, {At: 24 * time.Hour, Point: far},
 	}}
 	w := mine(domain.PriorityAssociate, walker)
-	p := intent.New(w, workload.NewCatalogue(w),
+	p := newPlanner(w, workload.NewCatalogue(w),
 		settings(`{"knowledge":"truth","lookahead_seconds":0,"burst_exempt":["restored"]}`), truthful(w))
 
 	for _, u := range p.Plan(30 * time.Second).Updates {
@@ -478,7 +478,7 @@ func TestWithoutRestoreDecayIsFinal(t *testing.T) {
 		{At: 120 * time.Second, Point: far}, {At: 24 * time.Hour, Point: far},
 	}}
 	w := mine(domain.PriorityAssociate, walker)
-	p := intent.New(w, workload.NewCatalogue(w), settings(`{"knowledge":"truth","lookahead_seconds":0,"restore":false}`), truthful(w))
+	p := newPlanner(w, workload.NewCatalogue(w), settings(`{"knowledge":"truth","lookahead_seconds":0,"restore":false}`), truthful(w))
 	p.Plan(30 * time.Second)
 
 	plan := p.Plan(120 * time.Second)
@@ -514,7 +514,7 @@ func TestSomeoneAnEventReachedWhenItHappenedStillProtectsItAfterLeaving(t *testi
 		{At: 100 * time.Second, Point: person}, {At: 24 * time.Hour, Point: person},
 	}}
 	w := mine(domain.PriorityAssociate, leaver)
-	p := intent.New(w, workload.NewCatalogue(w), settings(`{"knowledge":"truth","lookahead_seconds":0}`), truthful(w))
+	p := newPlanner(w, workload.NewCatalogue(w), settings(`{"knowledge":"truth","lookahead_seconds":0}`), truthful(w))
 
 	if tr, _ := stateOf(p.Plan(30*time.Second), farEvent); tr.State != domain.EventKept {
 		t.Fatalf("far event while the person stands on it = %+v, want kept", tr)
@@ -539,7 +539,7 @@ func TestSomeoneWhoArrivesAndLeavesAgainDoesNotProtectWhatNobodyIsHeadingFor(t *
 		{At: 190 * time.Second, Point: person}, {At: 24 * time.Hour, Point: person},
 	}}
 	w := mine(domain.PriorityAssociate, visitor)
-	p := intent.New(w, workload.NewCatalogue(w), settings(`{"knowledge":"truth","lookahead_seconds":0}`), truthful(w))
+	p := newPlanner(w, workload.NewCatalogue(w), settings(`{"knowledge":"truth","lookahead_seconds":0}`), truthful(w))
 	p.Plan(35 * time.Second)
 	p.Plan(120 * time.Second)
 

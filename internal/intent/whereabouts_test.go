@@ -48,6 +48,17 @@ func junction(magnitude float64, at domain.Point) workload.Workload {
 	return w
 }
 
+// newPlanner builds a planner from a generated workload the way the run
+// engine does: the work as the mine sees it, its catalogue, the oracle's truth
+// and the views.
+func newPlanner(w workload.Workload, c *workload.Catalogue, s domain.IntentSettings, views observe.Views) *intent.Planner {
+	oracle := make([]intent.Sighting, len(w.Events))
+	for i, e := range w.Events {
+		oracle[i] = intent.Sighting{At: e.Truth, Magnitude: e.Magnitude, Basis: intent.BasisTruth}
+	}
+	return intent.New(w.Work(), c, oracle, s, views)
+}
+
 func truthful(w workload.Workload) observe.Views {
 	tracks := observe.NewTracks(w.Entities)
 	return observe.Views{Mine: tracks, Oracle: tracks}
@@ -70,7 +81,7 @@ func judged(t *testing.T, w workload.Workload, s domain.IntentSettings, views ob
 	// four: four of these symmetric corner sensors leave the solve at the
 	// array's centre, which is where the person stands.
 	process(t, w, c, 20*time.Second, 0, 5)
-	state, ok := stateOf(intent.New(w, c, s, views).Plan(20*time.Second), 0)
+	state, ok := stateOf(newPlanner(w, c, s, views).Plan(20*time.Second), 0)
 	if !ok {
 		t.Fatalf("the event was not judged")
 	}

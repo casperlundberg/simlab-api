@@ -33,7 +33,9 @@ func TestSkippingSettledEventsDecidesExactlyWhatJudgingEverythingDoes(t *testing
 
 	settings := domain.DefaultIntent()
 	settings.Mode = domain.IntentBoth
-	quick, thorough := New(built, workload.NewCatalogue(built), settings, truthful(built)), New(built, workload.NewCatalogue(built), settings, truthful(built))
+	quickCatalogue, thoroughCatalogue := workload.NewCatalogue(built), workload.NewCatalogue(built)
+	quick := New(built.Work(), quickCatalogue, oracleOf(built), settings, truthful(built))
+	thorough := New(built.Work(), thoroughCatalogue, oracleOf(built), settings, truthful(built))
 	thorough.alwaysJudge = true
 
 	// The two catalogues are told about the same work at the same moments, so
@@ -57,8 +59,8 @@ func TestSkippingSettledEventsDecidesExactlyWhatJudgingEverythingDoes(t *testing
 			ids = append(ids, built.Jobs[done].ID)
 		}
 		if len(ids) > 0 {
-			finish(quick.catalogue, at, ids)
-			finish(thorough.catalogue, at, ids)
+			finish(quickCatalogue, at, ids)
+			finish(thoroughCatalogue, at, ids)
 		}
 
 		// A change of settings part-way through: every judgement and request
@@ -101,4 +103,14 @@ func TestSkippingSettledEventsDecidesExactlyWhatJudgingEverythingDoes(t *testing
 func truthful(w workload.Workload) observe.Views {
 	tracks := observe.NewTracks(w.Entities)
 	return observe.Views{Mine: tracks, Oracle: tracks}
+}
+
+// oracleOf is the truth the oracle arm is given: where each event really was,
+// and how large.
+func oracleOf(w workload.Workload) []Sighting {
+	out := make([]Sighting, len(w.Events))
+	for i, e := range w.Events {
+		out[i] = Sighting{At: e.Truth, Magnitude: e.Magnitude, Basis: BasisTruth}
+	}
+	return out
 }
