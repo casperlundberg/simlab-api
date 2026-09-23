@@ -34,6 +34,12 @@ type zoneParams struct {
 	// Also an assumption.
 	ReactionSeconds float64 `json:"reaction_seconds"`
 
+	// Activity, given, is the only events decided about: `encounter` asks
+	// about the encounters a scenario scripted and nothing else, which is
+	// what makes them an experiment rather than more of the day. Empty is
+	// every event, whatever produced it.
+	Activity string `json:"activity"`
+
 	// Need is what the decision waits on: "first-location", any location of
 	// the event, or "warning", a location whose own zone reaches the point
 	// that matters — a location too far out would not have told the mine this
@@ -77,6 +83,12 @@ func readZone(kind string, params json.RawMessage) (zoneParams, error) {
 		problems = append(problems, fmt.Sprintf("window_seconds must be > 0, got %v: a zone that matters for "+
 			"no time at all asks no decision", p.WindowSeconds))
 	}
+	switch p.Activity {
+	case "", "work", "blast", "background", "encounter":
+	default:
+		problems = append(problems, fmt.Sprintf("activity %q is not one of work, blast, background, "+
+			"encounter, or empty for every event", p.Activity))
+	}
 	if p.Need != "first-location" && p.Need != "warning" {
 		problems = append(problems, fmt.Sprintf("need %q is not one of first-location, warning", p.Need))
 	}
@@ -97,6 +109,10 @@ func (p zoneParams) need(event int, at domain.Point) Need {
 	}
 	return FirstLocation{Event: event}
 }
+
+// about reports whether a case decides about this event at all: every event,
+// or only those of the activity it asks for.
+func (p zoneParams) about(e Event) bool { return p.Activity == "" || p.Activity == e.Activity }
 
 // radius is an event's true zone at the level, if its ground motion reaches
 // that level at all outside its near field.
@@ -131,7 +147,7 @@ func (p zoneParams) entering(w World, visit func(event int, unit domain.Entity, 
 	units := p.units(w)
 	for i, e := range w.Events {
 		r, ok := p.radius(e)
-		if !ok {
+		if !ok || !p.about(e) {
 			continue
 		}
 		for _, u := range units {
@@ -189,7 +205,7 @@ func (c WayOut) Opportunities(w World) []Opportunity {
 	units := c.p.units(w)
 	for i, e := range w.Events {
 		r, ok := c.p.radius(e)
-		if !ok {
+		if !ok || !c.p.about(e) {
 			continue
 		}
 		until := e.Origin + c.p.window()

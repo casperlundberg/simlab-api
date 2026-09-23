@@ -177,6 +177,11 @@ type Scenario struct {
 	// and a low background elsewhere.
 	Activity *ActivitySpec `json:"activity,omitempty"`
 
+	// Encounters scripts events where a unit is about to be, so the decisions
+	// a case is about exist at a stated notice rather than only where the day
+	// happened to give them. Optional: nil is a day of its own events alone.
+	Encounters *EncounterSpec `json:"encounters,omitempty"`
+
 	// Seed makes a scenario reproducible. Two runs of the same scenario
 	// replay exactly the same jobs, which is what makes comparing two
 	// autoscaler settings a controlled experiment rather than an anecdote.
@@ -223,6 +228,11 @@ func (s Scenario) Validate() error {
 	}
 	if s.Activity != nil {
 		if err := s.Activity.Validate(); err != nil {
+			problems = append(problems, err.Error())
+		}
+	}
+	if s.Encounters != nil {
+		if err := s.Encounters.Validate(); err != nil {
 			problems = append(problems, err.Error())
 		}
 	}

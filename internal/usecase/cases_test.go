@@ -185,3 +185,33 @@ func TestACaseCanWaitForAWarningRatherThanAnyLocation(t *testing.T) {
 		}
 	}
 }
+
+// A case can ask only about the encounters a scenario scripted, so what they
+// measure is the notice they were scripted with and not the rest of the day.
+func TestACaseCanAskOnlyAboutTheEncountersThatWereScripted(t *testing.T) {
+	w := drive(walker("person-01", domain.EntityPerson, 0))
+	w.Events = append(w.Events, usecase.Event{
+		Origin: time.Minute, At: domain.Point{X: 400}, Magnitude: 0, Activity: "encounter"})
+	for _, tc := range []struct {
+		params string
+		want   int
+	}{
+		{"", 2},
+		{`{"activity":"encounter"}`, 1},
+		{`{"activity":"blast"}`, 0},
+	} {
+		for _, kind := range usecase.Kinds() {
+			got := one(t, kind, tc.params, w)
+			if kind == "way-out" {
+				continue // nobody is inside this zone when it happens
+			}
+			if len(got) != tc.want {
+				t.Errorf("%s with %q: %d decisions, want %d", kind, tc.params, len(got), tc.want)
+			}
+		}
+	}
+	if _, err := usecase.New("turn-back", json.RawMessage(`{"activity":"mining"}`)); err == nil ||
+		!strings.Contains(err.Error(), "activity") {
+		t.Errorf("New() = %v, want an activity nothing produces refused", err)
+	}
+}

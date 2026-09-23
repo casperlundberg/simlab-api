@@ -30,6 +30,13 @@ type SeismicEvent struct {
 	// Truth is where it really was. Ground truth; see the type comment.
 	Truth Point
 
+	// Activity is what produced it, where the scenario says: `work` around a
+	// face being worked, `blast` in the sequence after a blast, `background`
+	// in quiet ground, or `encounter` for one scripted where a unit was about
+	// to be. Empty for an event of a scenario that says nothing of how the
+	// mine is worked, which is every scenario before that.
+	Activity string
+
 	// Magnitude is how large it really was, as a Nuttli magnitude. Ground
 	// truth, like Truth. Nil for an event recorded before magnitudes were.
 	Magnitude *float64
@@ -116,6 +123,7 @@ type seismicEventWire struct {
 	OriginSeconds      float64            `json:"origin_seconds"`
 	Burst              *int               `json:"burst"`
 	Truth              Point              `json:"truth"`
+	Activity           string             `json:"activity,omitempty"`
 	Magnitude          *float64           `json:"magnitude"`
 	Exposed            []Exposure         `json:"exposed"`
 	Sensors            []string           `json:"sensors"`
@@ -150,6 +158,7 @@ func (e SeismicEvent) MarshalJSON() ([]byte, error) {
 		OriginSeconds:      e.Origin.Seconds(),
 		Burst:              e.Burst,
 		Truth:              e.Truth,
+		Activity:           e.Activity,
 		Magnitude:          e.Magnitude,
 		Exposed:            e.Exposed,
 		Sensors:            sensors,
@@ -173,6 +182,7 @@ func (e *SeismicEvent) UnmarshalJSON(data []byte) error {
 		Origin:      seconds(wire.OriginSeconds),
 		Burst:       wire.Burst,
 		Truth:       wire.Truth,
+		Activity:    wire.Activity,
 		Magnitude:   wire.Magnitude,
 		Exposed:     wire.Exposed,
 		Sensors:     wire.Sensors,

@@ -29,6 +29,17 @@ the simulator will walk them.
   asked. A decision waits on the event's first location, or — with `need` set
   to `warning` — on the first location whose own zone reaches the unit, which is
   where imperfect hypocentres cost a decision. See `docs/use-cases.md`.
+- **Scripted encounters** (`encounters` on a scenario, `docs/use-cases.md`):
+  events placed where a unit's own track is about to take it, timed so the unit
+  reaches the edge of the zone exactly a stated lead after the event — so the
+  decisions a case is about exist at a known notice instead of only where the
+  day happened to give them, which at high ground motion is a handful a day.
+  Drawn from a stream of its own after the day it is scripted into, so the same
+  seed gives the same day with the encounters added to it.
+- An event records **what produced it** (`activity`: work, blast, background or
+  encounter), stored and served; a use case can be asked about one activity
+  alone (`"activity": "encounter"`), which is what makes a scripted encounter
+  an experiment rather than more of the day.
 - **The closure map** (use case 2: `POST /api/runs/{id}/closure`): the ground
   the mine's located hypocentres would have kept people out of, against the
   ground its events really made dangerous, in metre-seconds of tunnel — what

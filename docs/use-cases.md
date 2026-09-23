@@ -64,6 +64,43 @@ gives about 750 turn-back and reroute decisions and 80 way-out; the high zone
 fewer than 20. Scripted encounters, to study the rarer high-level decisions
 without days of runs, are a scenario feature still to come.
 
+## Scripted encounters
+
+The decisions a case finds are the ones the day happened to give. At moderate
+ground motion a calibrated day gives hundreds; at **high** ground motion it
+gives a handful, because an event large enough to shake a drift that hard is
+rare — and those are the decisions that matter most. Waiting for them costs
+days of runs for a few decisions each.
+
+So a scenario can script them (`scenario.encounters`, `internal/workload`):
+
+```json
+{"encounters": {"count": 20, "magnitude": 2.5, "lead_seconds": 120, "level": "high"}}
+```
+
+Each encounter places **one event where a unit's own track is about to take
+it**, timed so the unit reaches the edge of the event's zone exactly
+`lead_seconds` after the event happens, having been outside it until then. The
+event goes a zone's radius ahead of the unit along the way it is going, in rock
+rather than in the drift — which is where hypocentres are. A unit standing
+still at that moment is refused rather than moved, so a run may script fewer
+than it asked for.
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `count` | 20 | Encounters scripted over the scenario. |
+| `magnitude` | 2.5 | The size of each scripted event: high ground motion reaches about 140 m from it, moderate about 1.4 km. |
+| `lead_seconds` | 120 | The notice the decision has. **This is what makes it an experiment**: a sweep over it asks how much notice the processing needs. |
+| `level` | `high` | The zone the unit is timed against. |
+| `kinds` | all three | Whom encounters are scripted for. |
+
+Nothing else about the world changes: the tracks are the ones the workforce
+already drew, the day's own events are the ones it already had, and the
+scripted events are drawn from a stream of their own, after them. They are real
+work — picked up by the array, queued and processed like any other event — and
+they are marked `encounter` in the activity an event records, so a case asked
+with `"activity": "encounter"` scores the scripted decisions and nothing else.
+
 ## The closure map (use case 2)
 
 The cases above each ask about one decision. Use case 2 asks about the picture

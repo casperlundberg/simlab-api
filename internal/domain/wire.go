@@ -65,6 +65,7 @@ type scenarioWire struct {
 	Bursts          []Burst            `json:"bursts,omitempty"`
 	Pipeline        *PipelineSpec      `json:"pipeline,omitempty"`
 	Activity        *ActivitySpec      `json:"activity,omitempty"`
+	Encounters      *EncounterSpec     `json:"encounters,omitempty"`
 	Description     string             `json:"description,omitempty"`
 	CreatedAt       time.Time          `json:"created_at,omitempty"`
 }
@@ -86,6 +87,7 @@ func (s Scenario) MarshalJSON() ([]byte, error) {
 		Bursts:          s.Bursts,
 		Pipeline:        s.Pipeline,
 		Activity:        s.Activity,
+		Encounters:      s.Encounters,
 		Description:     s.Description,
 		CreatedAt:       s.CreatedAt,
 	})
@@ -118,6 +120,7 @@ func (s *Scenario) UnmarshalJSON(data []byte) error {
 		Bursts:      wire.Bursts,
 		Pipeline:    wire.Pipeline,
 		Activity:    wire.Activity,
+		Encounters:  wire.Encounters,
 		Description: wire.Description,
 		CreatedAt:   wire.CreatedAt,
 	}
@@ -263,6 +266,41 @@ func triggerSpecOf(wire triggerWire) TriggerSpec {
 		}
 	}
 	return spec
+}
+
+// The encounters on the wire, durations in seconds like everything else.
+type encounterWire struct {
+	Count       int      `json:"count"`
+	Magnitude   float64  `json:"magnitude"`
+	LeadSeconds float64  `json:"lead_seconds"`
+	Level       string   `json:"level"`
+	Kinds       []string `json:"kinds"`
+}
+
+// MarshalJSON renders scripted encounters in the wire shape.
+func (e EncounterSpec) MarshalJSON() ([]byte, error) {
+	return json.Marshal(encounterWire{
+		Count: e.Count, Magnitude: e.Magnitude, LeadSeconds: e.Lead.Seconds(), Level: e.Level, Kinds: e.Kinds,
+	})
+}
+
+// UnmarshalJSON reads scripted encounters from the wire shape; what it leaves
+// out takes the default.
+func (e *EncounterSpec) UnmarshalJSON(data []byte) error {
+	d := DefaultEncounters()
+	wire := encounterWire{Count: d.Count, Magnitude: d.Magnitude, LeadSeconds: d.Lead.Seconds(), Level: d.Level}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	// Kinds given is the whole list: who encounters are for is a choice, not
+	// an addition to a default.
+	kinds := d.Kinds
+	if wire.Kinds != nil {
+		kinds = wire.Kinds
+	}
+	*e = EncounterSpec{Count: wire.Count, Magnitude: wire.Magnitude, Lead: seconds(wire.LeadSeconds),
+		Level: wire.Level, Kinds: kinds}
+	return nil
 }
 
 // The activity on the wire, durations in seconds like everything else.

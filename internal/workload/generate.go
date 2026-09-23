@@ -389,14 +389,103 @@ func Build(mine domain.Mine, scenario domain.Scenario) (Workload, error) {
 		}
 	}
 
+	if scenario.Encounters != nil {
+		encountered(&out, mine, scenario)
+	}
+
 	// Identity by position, assigned once the whole list exists. Jobs are
-	// appended in event order and never reordered here, so this is a function
-	// of the seed and nothing else — which is what lets two runs of one
-	// scenario be compared job for job.
+	// appended in event order and never reordered here — scripted encounters
+	// are merged back into that order before this — so this is a function of
+	// the seed and nothing else, which is what lets two runs of one scenario
+	// be compared job for job.
 	for i := range out.Jobs {
 		out.Jobs[i].ID = domain.JobID(i)
 	}
 	return out, nil
+}
+
+// Encounter marks an event that was scripted rather than drawn: what produced
+// it, as `work` and `blast` say for a worked mine.
+const Encounter = "encounter"
+
+// encountered scripts a scenario's encounters into a workload: one event each,
+// with the picks the array would have made of it and the jobs those picks are,
+// merged back into the day in the order things happened.
+//
+// Drawn from a stream of its own, after the day it is scripted into, so the
+// day is the day that seed always gave — the same events, in the same places,
+// with the same jobs — and the encounters are additions to it.
+func encountered(out *Workload, mine domain.Mine, scenario domain.Scenario) {
+	spec := *scenario.Encounters
+	random := rand.New(rand.NewPCG(uint64(scenario.Seed), encounterStream))
+	priorities, weights := priorityTable(scenario)
+
+	for _, e := range scripted(spec, out.Entities, out.Layout.Extent, scenario.Duration, random) {
+		picks := 0
+		for sensor := 0; sensor < mine.Sensors; sensor++ {
+			if random.Float64() < detectionProbability {
+				picks++
+			}
+		}
+		if picks == 0 {
+			continue // an event nothing detected is an event that produced no work
+		}
+		detecting := nearest(out.Layout.Sensors, e.truth, picks)
+		event := Event{
+			Origin:    e.at,
+			Truth:     e.truth,
+			Magnitude: spec.Magnitude,
+			Picks:     Rock.Picks(seismic.Event{At: e.truth, Origin: e.at}, detecting, scenario.PickJitter, random),
+			Activity:  Encounter,
+			Blast:     -1,
+		}
+		for k := range event.Picks {
+			event.Picks[k].Magnitude = spec.Magnitude + random.NormFloat64()*stationScatter
+		}
+		index := len(out.Events)
+		out.Events = append(out.Events, event)
+		for pick := 0; pick < picks; pick++ {
+			priority := samplePriority(priorities, weights, random)
+			seconds := sampleDuration(scenario.JobSeconds, random)
+			if scenario.Pipeline != nil {
+				priority = scenario.Pipeline.Pick.Priority
+				seconds = seconds / scenario.JobSeconds * scenario.Pipeline.Pick.Seconds
+			}
+			out.Jobs = append(out.Jobs, Job{SubmittedAt: e.at, Priority: priority, Seconds: seconds, Event: index})
+		}
+	}
+	inTimeOrder(out)
+}
+
+// inTimeOrder puts events back in the order they happened and jobs back in the
+// order they were submitted, and points each event at its first job again.
+//
+// Everything the run engine and the catalogue read depends on both: the queue
+// plays jobs as they arrive, and an event's picks are the jobs from FirstJob
+// on. A stable sort leaves a workload already in order exactly as it was.
+func inTimeOrder(out *Workload) {
+	order := make([]int, len(out.Events))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(a, b int) bool { return out.Events[order[a]].Origin < out.Events[order[b]].Origin })
+	events := make([]Event, len(out.Events))
+	position := make([]int, len(out.Events))
+	for to, from := range order {
+		events[to], position[from] = out.Events[from], to
+	}
+	out.Events = events
+	for i := range out.Jobs {
+		out.Jobs[i].Event = position[out.Jobs[i].Event]
+	}
+	sort.SliceStable(out.Jobs, func(a, b int) bool { return out.Jobs[a].SubmittedAt < out.Jobs[b].SubmittedAt })
+
+	found := make([]bool, len(out.Events))
+	for i, job := range out.Jobs {
+		if !found[job.Event] {
+			out.Events[job.Event].FirstJob, found[job.Event] = domain.JobID(i), true
+		}
+	}
 }
 
 // layoutOf is the mine's stated layout, or one derived from its id: a plan of

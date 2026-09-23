@@ -1029,6 +1029,8 @@ components:
           $ref: "#/components/schemas/Pipeline"
         activity:
           $ref: "#/components/schemas/Activity"
+        encounters:
+          $ref: "#/components/schemas/Encounters"
         seed:
           type: integer
           format: int64
@@ -1137,6 +1139,29 @@ components:
             clear_seconds: { type: number, minimum: 0, description: How long before the day's first blast the production areas are cleared of people. Default 1800. }
             reentry_seconds: { type: number, minimum: 0, description: How long after the day's last blast they stay closed. Default 10800. }
         spread_m: { type: number, exclusiveMinimum: 0, description: How far from a face its events fall, per axis. Default 75. }
+
+    Encounters:
+      type: object
+      description: |
+        Encounters scripted into the scenario: events placed where a unit's own
+        track is about to take it, timed so the unit reaches the edge of the
+        event's zone exactly `lead_seconds` after the event happens. Omit them
+        and a day gives only the decisions it happened to give — at high ground
+        motion, a handful. Scripted events are marked `encounter` in the
+        activity of the events served, are picked up and processed like any
+        other, and are drawn after the day itself, so the same seed gives the
+        same day with the encounters added to it. One that cannot be placed —
+        a unit standing still, a track too short — is left out rather than
+        forced. Anything left out takes its default; see docs/use-cases.md.
+      properties:
+        count: { type: integer, minimum: 1, description: Encounters scripted over the scenario. Default 20. }
+        magnitude: { type: number, minimum: -2, maximum: 6, description: The size of each scripted event. Default 2.5. }
+        lead_seconds: { type: number, exclusiveMinimum: 0, description: The notice the decision has. Default 120. }
+        level: { type: string, enum: [moderate, high, very-high], description: The zone the unit is timed against. Default high. }
+        kinds:
+          type: array
+          items: { type: string, enum: [person, crewed-vehicle, autonomous-vehicle] }
+          description: Whom encounters are scripted for. Given, it replaces the default whole.
 
     Stage:
       type: object

@@ -111,6 +111,10 @@ func TestEveryFieldOfAScenarioSurvivesTheDatabase(t *testing.T) {
 			OmoriP: 0.9, OmoriC: 4 * time.Minute, Length: 10 * time.Hour,
 			Clear: 20 * time.Minute, ReEntry: 2 * time.Hour},
 	}
+	saved.Encounters = &domain.EncounterSpec{
+		Count: 12, Magnitude: 2.75, Lead: 90 * time.Second, Level: "high",
+		Kinds: []string{domain.EntityCrewedVehicle},
+	}
 	if err := s.SaveScenario(ctx, saved); err != nil {
 		t.Fatalf("SaveScenario() = %v", err)
 	}
@@ -126,6 +130,7 @@ func TestEveryFieldOfAScenarioSurvivesTheDatabase(t *testing.T) {
 	noZeroFields(t, "sweep trigger", saved.Pipeline.Sweep)
 	noZeroFields(t, "activity", *saved.Activity)
 	noZeroFields(t, "blasting", saved.Activity.Blasting)
+	noZeroFields(t, "encounters", *saved.Encounters)
 	if !reflect.DeepEqual(saved, read) {
 		t.Errorf("the scenario changed in the database\n saved: %+v\n  read: %+v", saved, read)
 	}
@@ -168,6 +173,7 @@ func locatedEvent() domain.SeismicEvent {
 	return domain.SeismicEvent{
 		RunID: "run-1", Sequence: 1, Origin: 80250 * time.Millisecond, Burst: &burst,
 		Truth:     domain.Point{X: 800.5, Y: 500, Z: -900},
+		Activity:  "blast",
 		Magnitude: &magnitude,
 		Exposed:   []domain.Exposure{{Entity: "person-02", Level: "high", PPV: 0.31, Distance: 48.5}},
 		Sensors:   []string{"s02", "s01"},
