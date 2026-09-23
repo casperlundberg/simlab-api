@@ -453,12 +453,6 @@ func share(a, b float64) float64 {
 // MarshalJSON renders the summary with its times in seconds and what is not a
 // number as null.
 func (s ClosureSummary) MarshalJSON() ([]byte, error) {
-	num := func(v float64) *float64 {
-		if math.IsNaN(v) {
-			return nil
-		}
-		return &v
-	}
 	return json.Marshal(struct {
 		GroundMeters       float64  `json:"ground_meters"`
 		DurationSeconds    float64  `json:"duration_seconds"`
@@ -476,9 +470,9 @@ func (s ClosureSummary) MarshalJSON() ([]byte, error) {
 		CompleteP50Seconds *float64 `json:"complete_p50_seconds"`
 		CompleteP95Seconds *float64 `json:"complete_p95_seconds"`
 	}{s.GroundMeters, s.DurationSeconds, s.HazardMeterSeconds, s.ClosedMeterSeconds,
-		s.MissedMeterSeconds, s.FalseMeterSeconds, num(s.CoveredShare), num(s.FalseShare),
-		num(s.MeanClosedShare), num(s.PeakClosedShare), s.Events, s.Complete, s.NeverComplete,
-		num(s.CompleteP50), num(s.CompleteP95)})
+		s.MissedMeterSeconds, s.FalseMeterSeconds, nullable(s.CoveredShare), nullable(s.FalseShare),
+		nullable(s.MeanClosedShare), nullable(s.PeakClosedShare), s.Events, s.Complete, s.NeverComplete,
+		nullable(s.CompleteP50), nullable(s.CompleteP95)})
 }
 
 // MarshalJSON names the event by sequence, as the rest of the API does, and

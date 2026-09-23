@@ -261,14 +261,17 @@ func percentile(values []float64, q float64) float64 {
 	return sorted[max(0, int(math.Ceil(q*float64(len(sorted))))-1)]
 }
 
+// nullable renders what is not a number as null: no number is not zero, and a
+// reader of a report must be able to tell them apart.
+func nullable(v float64) *float64 {
+	if math.IsNaN(v) {
+		return nil
+	}
+	return &v
+}
+
 // MarshalJSON renders what is not a number as null.
 func (s Summary) MarshalJSON() ([]byte, error) {
-	num := func(v float64) *float64 {
-		if math.IsNaN(v) {
-			return nil
-		}
-		return &v
-	}
 	return json.Marshal(struct {
 		Opportunities     int      `json:"opportunities"`
 		InTime            int      `json:"in_time"`
@@ -278,8 +281,8 @@ func (s Summary) MarshalJSON() ([]byte, error) {
 		LatencyP50Seconds *float64 `json:"latency_p50_seconds"`
 		LatencyP95Seconds *float64 `json:"latency_p95_seconds"`
 		SlackP50Seconds   *float64 `json:"slack_p50_seconds"`
-	}{s.Opportunities, s.InTime, s.Never, s.Unwinnable, num(s.InTimeShare),
-		num(s.LatencyP50), num(s.LatencyP95), num(s.SlackP50)})
+	}{s.Opportunities, s.InTime, s.Never, s.Unwinnable, nullable(s.InTimeShare),
+		nullable(s.LatencyP50), nullable(s.LatencyP95), nullable(s.SlackP50)})
 }
 
 // registry is every case this build has, by kind. Looked up, never iterated
