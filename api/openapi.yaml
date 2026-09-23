@@ -931,6 +931,15 @@ components:
             Where it really happened. Known to the simulator and to nothing
             else: the mine never reads it, and it is here so an estimate can be
             compared with what it estimated.
+        activity:
+          type: string
+          enum: [work, blast, background, encounter]
+          description: |
+            What produced it, where the scenario says how the mine is worked:
+            `work` around a face being worked, `blast` in the sequence after a
+            blast, `background` in quiet ground, or `encounter` for one
+            scripted where a unit was about to be. Absent for a scenario that
+            says nothing of how the mine is worked.
         sensors:
           type: array
           items: { type: string }
