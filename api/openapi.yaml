@@ -504,6 +504,77 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/runs/{id}/closure:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    post:
+      tags: [runs]
+      summary: Draw a run's map of ground to keep out of, and measure it
+      description: |
+        Use case 2. Taking every location the mine had at a moment, and the
+        zone each one draws, how much of the ground the events really made
+        dangerous was closed, and how much of the mine was closed that nothing
+        endangered? The map is a union, as an operator would read it, so a
+        neighbouring event's zone can close the ground of an event nobody has
+        located yet.
+
+        Measured over the tunnels in metre-seconds — so many metres of drift
+        shut for so many seconds — by sampling them every `step_meters` (25).
+        `level` (moderate by default) is the ground motion that closes ground,
+        `window_seconds` (1800) how long an event's ground stays dangerous and
+        its zone closed, and `extra_allowance_meters` (0) widens every closed
+        zone beyond the allowance the run's own locations already carry.
+        Changes nothing, and any recorded run can be asked.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                params:
+                  type: object
+                  properties:
+                    level: { type: string, enum: [moderate, high, very-high] }
+                    window_seconds: { type: number, exclusiveMinimum: 0 }
+                    extra_allowance_meters: { type: number, minimum: 0 }
+                    step_meters: { type: number, exclusiveMinimum: 0 }
+      responses:
+        "200":
+          description: The map over the run, and each event that made ground dangerous.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  params: { type: object, description: The parameters used, defaults filled in. }
+                  summary:
+                    type: object
+                    properties:
+                      ground_meters: { type: number, description: How much tunnel there is. }
+                      duration_seconds: { type: number, description: How long the map is read over. }
+                      hazard_meter_seconds: { type: number }
+                      closed_meter_seconds: { type: number }
+                      missed_meter_seconds: { type: number, description: Dangerous tunnel left open. }
+                      false_meter_seconds: { type: number, description: Tunnel closed that nothing endangered. }
+                      covered_share: { type: number, nullable: true }
+                      false_share: { type: number, nullable: true }
+                      mean_closed_share: { type: number, nullable: true }
+                      peak_closed_share: { type: number, nullable: true }
+                      events: { type: integer, description: Events that made tunnel dangerous. }
+                      complete: { type: integer, description: Events whose dangerous tunnel was all closed at once. }
+                      never_complete: { type: integer }
+                      complete_p50_seconds: { type: number, nullable: true }
+                      complete_p95_seconds: { type: number, nullable: true }
+                  events:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        event: { type: integer, description: The event's sequence. }
+                        hazard_meters: { type: number }
+                        complete_after_seconds: { type: number, nullable: true }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/runs/{id}/intent:
     parameters: [{ $ref: "#/components/parameters/ID" }]
     get:

@@ -80,3 +80,34 @@ func (s *server) recorded(ctx context.Context, runID string) (usecase.World, use
 	world, record := usecase.FromRun(events, entities, layout.Tunnels)
 	return world, record, nil
 }
+
+// closureMap draws a run's map of ground to keep out of, from the locations
+// the mine had, and measures it against the ground the events really made
+// dangerous: use case 2.
+//
+// A POST for the same reason scoreUseCase is one, and computed from what the
+// run stored in the same way, so any recorded run can be asked.
+func (s *server) closureMap(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Params json.RawMessage `json:"params"`
+	}
+	if err := decode(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	c, err := usecase.NewClosure(body.Params)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	world, record, err := s.recorded(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	drawn := c.Map(world, record)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"params": c.Params(), "summary": drawn.Summary, "events": drawn.Events,
+	})
+}

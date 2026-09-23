@@ -64,6 +64,38 @@ gives about 750 turn-back and reroute decisions and 80 way-out; the high zone
 fewer than 20. Scripted encounters, to study the rarer high-level decisions
 without days of runs, are a scenario feature still to come.
 
+## The closure map (use case 2)
+
+The cases above each ask about one decision. Use case 2 asks about the picture
+they are all read from: taking every location the mine had at a moment, and the
+zone each one draws, **how much of the ground the events really made dangerous
+was closed, and how much of the mine was closed that nothing endangered?**
+
+`POST /api/runs/{id}/closure`, and `usecase.Closure` behind it. The map is a
+union, as an operator would read it, so a neighbouring event's zone can close
+the ground of an event nobody has located yet — the effect case 2 was written
+to look for. It is measured over the tunnels in **metre-seconds**, because that
+is what a closure costs: so many metres of drift shut for so many seconds. The
+tunnels are sampled every `step_meters`; a stretch is *dangerous* when the
+event's true ground motion reaches the level there, and *closed* when some
+location the mine had says it does. A first location draws the map until the
+final one replaces it.
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `level` | `moderate` | The ground motion that closes ground, in the truth and in what a location claims. |
+| `window_seconds` | 1800 | How long an event's ground stays dangerous, and its zone closed. |
+| `extra_allowance_meters` | 0 | Widens every closed zone beyond the allowance the run's own locations already carry (50 m), to ask what a more cautious mine would have missed, and closed, instead. |
+| `step_meters` | 25 | How finely the tunnels are sampled. Finer is slower and no truer than the zones are. |
+
+It reports `covered_share` (the dangerous tunnel the map shut), `false_share`
+(the shut tunnel nothing endangered), `mean_closed_share` and
+`peak_closed_share` (how much of the mine is shut, on average and at its
+worst), and, per event, how long after it the map first covered every dangerous
+metre of it — `never_complete` for the events where it never did. The two
+shares trade against each other: a wider allowance misses less and closes more,
+which is the question the sweep asks.
+
 ## Adding a case
 
 1. A type implementing `usecase.Case`: `Kind`, `Params` (the parameters it runs

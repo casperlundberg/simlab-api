@@ -60,19 +60,11 @@ func readZone(kind string, params json.RawMessage) (zoneParams, error) {
 		return p, err
 	}
 	var problems []string
-	found := false
-	for _, l := range hazard.Levels {
-		if l.String() == p.Level {
-			p.level, found = l, true
-		}
-	}
+	level, found := levelNamed(p.Level)
 	if !found {
-		names := make([]string, len(hazard.Levels))
-		for i, l := range hazard.Levels {
-			names[i] = l.String()
-		}
-		problems = append(problems, fmt.Sprintf("level %q is not one of %s", p.Level, strings.Join(names, ", ")))
+		problems = append(problems, fmt.Sprintf("level %q is not one of %s", p.Level, strings.Join(levelNames(), ", ")))
 	}
+	p.level = level
 	for _, k := range p.Kinds {
 		switch k {
 		case domain.EntityPerson, domain.EntityCrewedVehicle, domain.EntityAutonomousVehicle:
@@ -108,10 +100,7 @@ func (p zoneParams) need(event int, at domain.Point) Need {
 
 // radius is an event's true zone at the level, if its ground motion reaches
 // that level at all outside its near field.
-func (p zoneParams) radius(e Event) (float64, bool) {
-	r, ok := hazard.Default.Zones(e.Magnitude, 0)[p.level]
-	return r, ok
-}
+func (p zoneParams) radius(e Event) (float64, bool) { return trueRadius(p.level, e) }
 
 func (p zoneParams) window() time.Duration {
 	return time.Duration(p.WindowSeconds * float64(time.Second))

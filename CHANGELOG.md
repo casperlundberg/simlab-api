@@ -29,6 +29,12 @@ the simulator will walk them.
   asked. A decision waits on the event's first location, or — with `need` set
   to `warning` — on the first location whose own zone reaches the unit, which is
   where imperfect hypocentres cost a decision. See `docs/use-cases.md`.
+- **The closure map** (use case 2: `POST /api/runs/{id}/closure`): the ground
+  the mine's located hypocentres would have kept people out of, against the
+  ground its events really made dangerous, in metre-seconds of tunnel — what
+  was missed, what was closed needlessly, and how long after each event the map
+  covered all of it. A union, so a neighbour's zone can cover an event nobody
+  has located yet. Drawn from what a run stored, like the cases.
 - **How a mine is worked** (`activity` on a scenario, `internal/activity`,
   `docs/activity.md`): the same daily rate from work around the faces being
   worked, the Omori sequence after each blast in a daily blasting window, and a
