@@ -46,6 +46,9 @@ type Event struct {
 	// Activity is what produced it, where the scenario says: work, blast,
 	// background, or encounter for one scripted where a unit was about to be.
 	Activity string
+	// ScriptedFor is the unit an encounter was scripted for. Empty for every
+	// event a scenario did not script.
+	ScriptedFor string
 }
 
 // Record is what the mine had, and when: for each event, the moment it was
@@ -73,7 +76,8 @@ func FromRun(events []domain.SeismicEvent, units []domain.Entity, tunnels []doma
 		if e.Magnitude != nil {
 			magnitude = *e.Magnitude
 		}
-		w.Events[i] = Event{Origin: e.Origin, At: e.Truth, Magnitude: magnitude, Activity: e.Activity}
+		w.Events[i] = Event{Origin: e.Origin, At: e.Truth, Magnitude: magnitude,
+			Activity: e.Activity, ScriptedFor: e.ScriptedFor}
 		r.Located[i], r.Processed[i] = e.LocatedAt, e.ProcessedAt
 		r.First[i], r.Final[i] = e.Located, e.Final
 	}

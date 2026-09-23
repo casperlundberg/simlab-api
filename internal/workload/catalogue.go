@@ -67,6 +67,7 @@ func NewCatalogue(w Workload) *Catalogue {
 			Burst:           event.Burst,
 			Truth:           event.Truth,
 			Activity:        event.Activity,
+			ScriptedFor:     event.ScriptedFor,
 			Magnitude:       &magnitude,
 			Exposed:         exposure(w.Entities, event.Truth, magnitude, event.Origin, 0),
 			Sensors:         sensors,

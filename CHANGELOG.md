@@ -37,9 +37,11 @@ the simulator will walk them.
   Drawn from a stream of its own after the day it is scripted into, so the same
   seed gives the same day with the encounters added to it.
 - An event records **what produced it** (`activity`: work, blast, background or
-  encounter), stored and served; a use case can be asked about one activity
-  alone (`"activity": "encounter"`), which is what makes a scripted encounter
-  an experiment rather than more of the day.
+  encounter) and, for an encounter, **the unit it was scripted for**, stored
+  and served. A use case can be asked about one activity alone
+  (`"activity": "encounter"`), and an encounter is then a decision for the unit
+  it was scripted for and no other — which is what makes it an experiment at a
+  known notice rather than more of the day.
 - **The closure map** (use case 2: `POST /api/runs/{id}/closure`): the ground
   the mine's located hypocentres would have kept people out of, against the
   ground its events really made dangerous, in metre-seconds of tunnel — what

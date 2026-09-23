@@ -172,12 +172,13 @@ func locatedEvent() domain.SeismicEvent {
 	magnitude, estimated, final := 2.4, 2.25, 2.37
 	return domain.SeismicEvent{
 		RunID: "run-1", Sequence: 1, Origin: 80250 * time.Millisecond, Burst: &burst,
-		Truth:     domain.Point{X: 800.5, Y: 500, Z: -900},
-		Activity:  "blast",
-		Magnitude: &magnitude,
-		Exposed:   []domain.Exposure{{Entity: "person-02", Level: "high", PPV: 0.31, Distance: 48.5}},
-		Sensors:   []string{"s02", "s01"},
-		LocatedAt: &locatedAt,
+		Truth:       domain.Point{X: 800.5, Y: 500, Z: -900},
+		Activity:    "blast",
+		ScriptedFor: "crewed-vehicle-02",
+		Magnitude:   &magnitude,
+		Exposed:     []domain.Exposure{{Entity: "person-02", Level: "high", PPV: 0.31, Distance: 48.5}},
+		Sensors:     []string{"s02", "s01"},
+		LocatedAt:   &locatedAt,
 		Located: &domain.Location{
 			At: domain.Point{X: 790, Y: 510.5, Z: -905}, RMSResidualSeconds: 0.0021, Picks: 4,
 			Magnitude: &estimated, Zones: map[string]float64{"moderate": 900, "high": 140},

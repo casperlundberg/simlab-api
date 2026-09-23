@@ -38,6 +38,12 @@ type zoneParams struct {
 	// about the encounters a scenario scripted and nothing else, which is
 	// what makes them an experiment rather than more of the day. Empty is
 	// every event, whatever produced it.
+	//
+	// An event an encounter scripted is decided about **for the unit it was
+	// scripted for and no other**: that unit was given the notice the
+	// scenario asked for, and another that wanders into the same zone an hour
+	// later was given whatever the day happened to give — which is a decision
+	// of the day's own, not of the experiment.
 	Activity string `json:"activity"`
 
 	// Need is what the decision waits on: "first-location", any location of
@@ -114,6 +120,13 @@ func (p zoneParams) need(event int, at domain.Point) Need {
 // or only those of the activity it asks for.
 func (p zoneParams) about(e Event) bool { return p.Activity == "" || p.Activity == e.Activity }
 
+// decidesFor reports whether a case decides about this event for this unit.
+// An event scripted for a unit is that unit's alone; every other event is
+// decided about for everyone.
+func (p zoneParams) decidesFor(e Event, unit domain.Entity) bool {
+	return e.ScriptedFor == "" || e.ScriptedFor == unit.ID
+}
+
 // radius is an event's true zone at the level, if its ground motion reaches
 // that level at all outside its near field.
 func (p zoneParams) radius(e Event) (float64, bool) { return trueRadius(p.level, e) }
@@ -151,6 +164,9 @@ func (p zoneParams) entering(w World, visit func(event int, unit domain.Entity, 
 			continue
 		}
 		for _, u := range units {
+			if !p.decidesFor(e, u) {
+				continue
+			}
 			if entry, ok := firstEntry(u.Track, e.At, r, e.Origin, e.Origin+p.window()); ok {
 				visit(i, u, entry)
 			}
@@ -210,7 +226,7 @@ func (c WayOut) Opportunities(w World) []Opportunity {
 		}
 		until := e.Origin + c.p.window()
 		for _, u := range units {
-			if !inside(u.Track, e.At, r, e.Origin) {
+			if !c.p.decidesFor(e, u) || !inside(u.Track, e.At, r, e.Origin) {
 				continue
 			}
 			leaves, ok := firstExit(u.Track, e.At, r, e.Origin, until)

@@ -37,6 +37,11 @@ type SeismicEvent struct {
 	// mine is worked, which is every scenario before that.
 	Activity string
 
+	// ScriptedFor is the unit an encounter was scripted for: the one it was
+	// placed ahead of, at the notice the scenario asked for. Empty for every
+	// event a scenario did not script.
+	ScriptedFor string
+
 	// Magnitude is how large it really was, as a Nuttli magnitude. Ground
 	// truth, like Truth. Nil for an event recorded before magnitudes were.
 	Magnitude *float64
@@ -124,6 +129,7 @@ type seismicEventWire struct {
 	Burst              *int               `json:"burst"`
 	Truth              Point              `json:"truth"`
 	Activity           string             `json:"activity,omitempty"`
+	ScriptedFor        string             `json:"scripted_for,omitempty"`
 	Magnitude          *float64           `json:"magnitude"`
 	Exposed            []Exposure         `json:"exposed"`
 	Sensors            []string           `json:"sensors"`
@@ -159,6 +165,7 @@ func (e SeismicEvent) MarshalJSON() ([]byte, error) {
 		Burst:              e.Burst,
 		Truth:              e.Truth,
 		Activity:           e.Activity,
+		ScriptedFor:        e.ScriptedFor,
 		Magnitude:          e.Magnitude,
 		Exposed:            e.Exposed,
 		Sensors:            sensors,
@@ -183,6 +190,7 @@ func (e *SeismicEvent) UnmarshalJSON(data []byte) error {
 		Burst:       wire.Burst,
 		Truth:       wire.Truth,
 		Activity:    wire.Activity,
+		ScriptedFor: wire.ScriptedFor,
 		Magnitude:   wire.Magnitude,
 		Exposed:     wire.Exposed,
 		Sensors:     wire.Sensors,

@@ -98,8 +98,11 @@ Nothing else about the world changes: the tracks are the ones the workforce
 already drew, the day's own events are the ones it already had, and the
 scripted events are drawn from a stream of their own, after them. They are real
 work — picked up by the array, queued and processed like any other event — and
-they are marked `encounter` in the activity an event records, so a case asked
-with `"activity": "encounter"` scores the scripted decisions and nothing else.
+they are marked `encounter` in the activity an event records, and name the unit
+they were scripted for, so a case asked with `"activity": "encounter"` scores
+**that unit's decision and no other**: another unit that wanders into the same
+zone an hour later was given whatever the day happened to give it, which is a
+decision of the day's own rather than of the experiment.
 
 ## The closure map (use case 2)
 

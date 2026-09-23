@@ -940,6 +940,13 @@ components:
             blast, `background` in quiet ground, or `encounter` for one
             scripted where a unit was about to be. Absent for a scenario that
             says nothing of how the mine is worked.
+        scripted_for:
+          type: string
+          description: |
+            The unit an encounter was scripted for: the one the event was
+            placed ahead of, at the notice the scenario asked for. A use case
+            asked about `encounter` decides about that unit and no other.
+            Absent for every event a scenario did not script.
         sensors:
           type: array
           items: { type: string }

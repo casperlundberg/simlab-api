@@ -191,7 +191,8 @@ func TestACaseCanWaitForAWarningRatherThanAnyLocation(t *testing.T) {
 func TestACaseCanAskOnlyAboutTheEncountersThatWereScripted(t *testing.T) {
 	w := drive(walker("person-01", domain.EntityPerson, 0))
 	w.Events = append(w.Events, usecase.Event{
-		Origin: time.Minute, At: domain.Point{X: 400}, Magnitude: 0, Activity: "encounter"})
+		Origin: time.Minute, At: domain.Point{X: 400}, Magnitude: 0,
+		Activity: "encounter", ScriptedFor: "person-01"})
 	for _, tc := range []struct {
 		params string
 		want   int
@@ -213,5 +214,23 @@ func TestACaseCanAskOnlyAboutTheEncountersThatWereScripted(t *testing.T) {
 	if _, err := usecase.New("turn-back", json.RawMessage(`{"activity":"mining"}`)); err == nil ||
 		!strings.Contains(err.Error(), "activity") {
 		t.Errorf("New() = %v, want an activity nothing produces refused", err)
+	}
+}
+
+// An encounter is a decision for the unit it was scripted for. Another unit
+// that walks into the same zone was given whatever the day gave it, which is
+// not the notice the encounter was scripted with.
+func TestAnEncounterIsADecisionForTheUnitItWasScriptedFor(t *testing.T) {
+	w := drive(walker("person-01", domain.EntityPerson, 0), walker("person-02", domain.EntityPerson, 100))
+	w.Events = []usecase.Event{{Origin: time.Minute, At: domain.Point{X: 400}, Magnitude: 0,
+		Activity: "encounter", ScriptedFor: "person-02"}}
+	got := one(t, "turn-back", `{"activity":"encounter"}`, w)
+	if len(got) != 1 || got[0].Entity != "person-02" {
+		t.Errorf("decisions = %+v, want one, for the unit it was scripted for", got)
+	}
+	// And the day's own events are still decided about for everyone.
+	w.Events[0].Activity, w.Events[0].ScriptedFor = "", ""
+	if got := one(t, "turn-back", "", w); len(got) != 2 {
+		t.Errorf("%d decisions about an event nobody scripted, want one per unit heading in", len(got))
 	}
 }

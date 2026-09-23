@@ -213,8 +213,13 @@ type Event struct {
 	// happen around; Blast the index in Workload.Blasts of the blast it
 	// follows, -1 otherwise. Ground truth, like Truth.
 	Activity string
-	Near     domain.Point
-	Blast    int
+
+	// ScriptedFor is the unit an encounter was scripted for: the one the
+	// event was placed ahead of, at the notice the scenario asked for. Empty
+	// for every event a scenario did not script.
+	ScriptedFor string
+	Near        domain.Point
+	Blast       int
 }
 
 // Generate produces the jobs for one scenario, deterministically from its
@@ -432,12 +437,13 @@ func encountered(out *Workload, mine domain.Mine, scenario domain.Scenario) {
 		}
 		detecting := nearest(out.Layout.Sensors, e.truth, picks)
 		event := Event{
-			Origin:    e.at,
-			Truth:     e.truth,
-			Magnitude: spec.Magnitude,
-			Picks:     Rock.Picks(seismic.Event{At: e.truth, Origin: e.at}, detecting, scenario.PickJitter, random),
-			Activity:  Encounter,
-			Blast:     -1,
+			Origin:      e.at,
+			Truth:       e.truth,
+			Magnitude:   spec.Magnitude,
+			Picks:       Rock.Picks(seismic.Event{At: e.truth, Origin: e.at}, detecting, scenario.PickJitter, random),
+			Activity:    Encounter,
+			ScriptedFor: e.unit,
+			Blast:       -1,
 		}
 		for k := range event.Picks {
 			event.Picks[k].Magnitude = spec.Magnitude + random.NormFloat64()*stationScatter

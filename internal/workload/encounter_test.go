@@ -25,6 +25,15 @@ func day(t *testing.T, seed int64, encounters *domain.EncounterSpec) workload.Wo
 	return w
 }
 
+func unitNamed(w workload.Workload, id string) (domain.Entity, bool) {
+	for _, e := range w.Entities {
+		if e.ID == id {
+			return e, true
+		}
+	}
+	return domain.Entity{}, false
+}
+
 func encounters(w workload.Workload) []workload.Event {
 	var out []workload.Event
 	for _, e := range w.Events {
@@ -50,32 +59,29 @@ func TestAScriptedEncounterGivesAUnitTheNoticeItWasScriptedFor(t *testing.T) {
 		if e.Magnitude != spec.Magnitude {
 			t.Errorf("a scripted event of magnitude %v, want %v", e.Magnitude, spec.Magnitude)
 		}
-		// Somebody was given the notice it was scripted for. Others may walk
-		// into the same zone sooner or later; those are decisions the day
-		// gave, not the one that was scripted.
-		var given []time.Duration
-		for _, unit := range w.Entities {
-			if unit.PositionAt(e.Origin).DistanceTo(e.Truth) <= radius {
-				continue // already inside when it happened: not who it was for
-			}
-			for at := e.Origin; at < e.Origin+time.Hour; at += 5 * time.Second {
-				if unit.PositionAt(at).DistanceTo(e.Truth) <= radius {
-					given = append(given, at-e.Origin)
-					break
-				}
+		// The event names the unit it was scripted for, and that unit gets the
+		// notice. Others may walk into the same zone sooner or later; those
+		// are decisions the day gave, not the one that was scripted.
+		unit, ok := unitNamed(w, e.ScriptedFor)
+		if !ok {
+			t.Errorf("the event at %v was scripted for %q, which is nobody in the run", e.Origin, e.ScriptedFor)
+			continue
+		}
+		if unit.PositionAt(e.Origin).DistanceTo(e.Truth) <= radius {
+			t.Errorf("%s was already inside the zone of the event at %v scripted for it", unit.ID, e.Origin)
+			continue
+		}
+		given := time.Duration(-1)
+		for at := e.Origin; at < e.Origin+time.Hour; at += 5 * time.Second {
+			if unit.PositionAt(at).DistanceTo(e.Truth) <= radius {
+				given = at - e.Origin
+				break
 			}
 		}
 		// The track is walked in five-second steps, so the notice can be a
 		// step out; it must not be a different notice.
-		scriptedFor := false
-		for _, entry := range given {
-			if off := entry - spec.Lead; off >= -10*time.Second && off <= 10*time.Second {
-				scriptedFor = true
-			}
-		}
-		if !scriptedFor {
-			t.Errorf("the event at %v gave notice of %v; it was scripted to give somebody %v",
-				e.Origin, given, spec.Lead)
+		if off := given - spec.Lead; off < -10*time.Second || off > 10*time.Second {
+			t.Errorf("the event at %v gave %s %v notice, want %v", e.Origin, unit.ID, given, spec.Lead)
 		}
 	}
 }
