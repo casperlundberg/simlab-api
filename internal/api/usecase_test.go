@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/casperlundberg/simlab-api/internal/domain"
 	"github.com/casperlundberg/simlab-api/internal/usecase"
 )
 
@@ -153,4 +154,72 @@ func TestAClosureRequestThatCannotBeAnsweredSaysWhy(t *testing.T) {
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("a run that does not exist: status %d, want 404", resp.StatusCode)
 	}
+}
+
+// The whole chain an experiment depends on: a scenario scripts encounters, the
+// generator places them, the run records what produced each event, and a case
+// asked about that activity scores the scripted decisions and nothing else.
+func TestAScenariosScriptedEncountersReachTheDecisionsScoredForThem(t *testing.T) {
+	f := newFixture(t)
+	seedMineAndScenario(t, f)
+	if resp := f.do(t, http.MethodPost, "/api/scenarios", map[string]any{
+		"id": "scripted", "mine_id": "storhall", "name": "Scripted",
+		"duration_seconds": 1800, "job_seconds": 20, "seed": 11,
+		"priority_mix": map[string]float64{"100": 1, "25": 3},
+		"encounters":   map[string]any{"count": 8, "magnitude": 2.5, "lead_seconds": 120, "level": "high"},
+	}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /api/scenarios = %d: %v", resp.StatusCode, decodeBody(t, resp))
+	}
+	resp := f.do(t, http.MethodPost, "/api/runs", map[string]any{
+		"mode": "simulation", "scenario_id": "scripted",
+		"decision_interval_seconds": 30, "time_compression": 1000000,
+		"settings": map[string]any{"local_executor_cap": 20, "cloud_executor_cap": 40},
+	})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("POST /api/runs = %d: %v", resp.StatusCode, decodeBody(t, resp))
+	}
+	runID, _ := decodeBody(t, resp)["id"].(string)
+	waitForRun(t, f, runID, domain.StatusCompleted)
+
+	events, err := f.store.SeismicEvents(context.Background(), runID, 0, 20000)
+	if err != nil {
+		t.Fatalf("SeismicEvents() = %v", err)
+	}
+	scripted := 0
+	for _, e := range events {
+		if e.Activity == "encounter" {
+			scripted++
+		}
+	}
+	if scripted == 0 {
+		t.Fatal("the run recorded no scripted encounter; the scenario asked for eight")
+	}
+
+	all := useCaseSummary(t, f, runID, `{"level":"high"}`)
+	only := useCaseSummary(t, f, runID, `{"level":"high","activity":"encounter"}`)
+	if only.Opportunities == 0 {
+		t.Error("no decision was scored for the encounters that were scripted")
+	}
+	if only.Opportunities > all.Opportunities {
+		t.Errorf("%d decisions about the encounters alone, %d about every event",
+			only.Opportunities, all.Opportunities)
+	}
+}
+
+func useCaseSummary(t *testing.T, f *fixture, runID, params string) usecase.Summary {
+	t.Helper()
+	resp := f.do(t, http.MethodPost, "/api/runs/"+runID+"/use-cases",
+		map[string]any{"kind": "turn-back", "params": json.RawMessage(params)})
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("POST use-cases %s = %d: %s", params, resp.StatusCode, body)
+	}
+	var got struct {
+		Summary usecase.Summary `json:"summary"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+	resp.Body.Close()
+	return got.Summary
 }
