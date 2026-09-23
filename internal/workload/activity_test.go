@@ -113,3 +113,90 @@ func TestAMineNobodyDescribedTheWorkingOfIsGeneratedAsBefore(t *testing.T) {
 		}
 	}
 }
+
+// crews is everyone with people in them: people and crewed vehicles.
+func crews(w workload.Workload) []domain.Entity {
+	var out []domain.Entity
+	for _, e := range w.Entities {
+		if e.Kind == domain.EntityPerson || e.Kind == domain.EntityCrewedVehicle {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func TestNobodyIsNearAFaceWhenItIsBlasted(t *testing.T) {
+	w := worked(t, 6)
+	for _, b := range w.Blasts {
+		for _, e := range crews(w) {
+			if d := e.PositionAt(b.At).DistanceTo(b.Face); d < 150 {
+				t.Errorf("%s is %.0f m from the face blasted at %v; the production areas are cleared first",
+					e.ID, d, b.At)
+			}
+		}
+	}
+}
+
+// facesNear reports whether a point is at one of the faces being worked.
+func atAFace(p domain.Point, faces []domain.Point) bool {
+	for _, f := range faces {
+		if p.DistanceTo(f) < 30 {
+			return true
+		}
+	}
+	return false
+}
+
+func TestCrewsWorkAtTheFacesBeingWorkedAndComeBackAfterReEntry(t *testing.T) {
+	w := worked(t, 7)
+	active := activeFaces(t, w)
+	at, total := 0, 0
+	for s := 6 * time.Hour; s < 24*time.Hour; s += 10 * time.Minute {
+		for _, e := range crews(w) {
+			if e.Kind != domain.EntityPerson {
+				continue
+			}
+			total++
+			if atAFace(e.PositionAt(s), active(s)) {
+				at++
+			}
+		}
+	}
+	if share := float64(at) / float64(total); share < 0.3 {
+		t.Errorf("people are at a face being worked %.0f %% of the time outside blasting; crews work "+
+			"there, so they should be most of the time they are not walking between them", share*100)
+	}
+	// Re-entry is three hours after the last blast at 01:45; an hour on, some
+	// crew is back at work.
+	back := false
+	for _, e := range crews(w) {
+		back = back || atAFace(e.PositionAt(5*time.Hour+45*time.Minute), active(5*time.Hour+45*time.Minute))
+	}
+	if !back {
+		t.Error("an hour after re-entry nobody is back at a face being worked")
+	}
+}
+
+// activeFaces is which faces were worked when, read from the events of work:
+// every face some work event happened around, by the shift it happened in.
+func activeFaces(t *testing.T, w workload.Workload) func(time.Duration) []domain.Point {
+	t.Helper()
+	byShift := map[int]map[domain.Point]bool{}
+	for _, e := range w.Events {
+		if e.Activity != "work" {
+			continue
+		}
+		shift := int(e.Origin / (12 * time.Hour))
+		if byShift[shift] == nil {
+			byShift[shift] = map[domain.Point]bool{}
+		}
+		byShift[shift][e.Near] = true
+	}
+	return func(at time.Duration) []domain.Point {
+		var out []domain.Point
+		for f := range byShift[int(at/(12*time.Hour))] {
+			out = append(out, f)
+		}
+		return out
+	}
+}

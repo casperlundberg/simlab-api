@@ -1063,6 +1063,8 @@ components:
             omori_p: { type: number, exclusiveMinimum: 0, maximum: 3, description: Decay of a blast's sequence. Default 1.0. }
             omori_c_seconds: { type: number, exclusiveMinimum: 0, description: How soon the decay sets in. Default 300. }
             length_seconds: { type: number, exclusiveMinimum: 0, description: How long a sequence is drawn over. Default 43200. }
+            clear_seconds: { type: number, minimum: 0, description: How long before the day's first blast the production areas are cleared of people. Default 1800. }
+            reentry_seconds: { type: number, minimum: 0, description: How long after the day's last blast they stay closed. Default 10800. }
         spread_m: { type: number, exclusiveMinimum: 0, description: How far from a face its events fall, per axis. Default 75. }
 
     Stage:

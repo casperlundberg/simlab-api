@@ -56,6 +56,12 @@ type BlastSchedule struct {
 	// Length is how long after a blast its sequence is drawn over — past it
 	// the rate is taken to be back to background.
 	Length time.Duration
+	// Clear is how long before the first blast of the window the production
+	// areas are cleared of people, and ReEntry how long after the last blast
+	// they stay closed: LKAB evacuates before blasting and ventilates for
+	// several hours after; the surveyed re-entry protocols wait from 2 to 12.
+	Clear   time.Duration
+	ReEntry time.Duration
 }
 
 // DefaultActivity is a starting point, not a finding: four faces worked in
@@ -70,6 +76,7 @@ func DefaultActivity() ActivitySpec {
 		Blasting: BlastSchedule{
 			Start: time.Hour + 15*time.Minute, Window: 30 * time.Minute, Every: 10 * time.Minute,
 			OmoriP: 1.0, OmoriC: 5 * time.Minute, Length: 12 * time.Hour,
+			Clear: 30 * time.Minute, ReEntry: 3 * time.Hour,
 		},
 		Spread: 75,
 	}
@@ -110,6 +117,12 @@ func (a ActivitySpec) Validate() error {
 	}
 	if b.Length <= 0 {
 		problems = append(problems, fmt.Sprintf("activity.blasting.length_seconds must be > 0, got %v", b.Length.Seconds()))
+	}
+	if b.Clear < 0 {
+		problems = append(problems, fmt.Sprintf("activity.blasting.clear_seconds must be >= 0, got %v", b.Clear.Seconds()))
+	}
+	if b.ReEntry < 0 {
+		problems = append(problems, fmt.Sprintf("activity.blasting.reentry_seconds must be >= 0, got %v", b.ReEntry.Seconds()))
 	}
 	if a.Spread <= 0 {
 		problems = append(problems, fmt.Sprintf("activity.spread_m must be > 0, got %v", a.Spread))

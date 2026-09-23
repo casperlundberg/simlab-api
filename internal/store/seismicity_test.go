@@ -108,7 +108,8 @@ func TestEveryFieldOfAScenarioSurvivesTheDatabase(t *testing.T) {
 		Areas: 3, Rotate: 8 * time.Hour, Spread: 60,
 		Mix: domain.ActivityMix{Blast: 0.4, Work: 0.4, Background: 0.2},
 		Blasting: domain.BlastSchedule{Start: 14 * time.Hour, Window: time.Hour, Every: 15 * time.Minute,
-			OmoriP: 0.9, OmoriC: 4 * time.Minute, Length: 10 * time.Hour},
+			OmoriP: 0.9, OmoriC: 4 * time.Minute, Length: 10 * time.Hour,
+			Clear: 20 * time.Minute, ReEntry: 2 * time.Hour},
 	}
 	if err := s.SaveScenario(ctx, saved); err != nil {
 		t.Fatalf("SaveScenario() = %v", err)

@@ -189,3 +189,32 @@ func TestTheSameSeedGivesTheSameActivity(t *testing.T) {
 		t.Error("the same seed drew different sources")
 	}
 }
+
+// Production areas are cleared before blasting and stay closed until re-entry
+// after the last blast (LKAB ventilates for several hours; re-entry protocols
+// wait 2 to 12 hours).
+func TestTheMineIsClearedBeforeItsBlastsUntilReEntry(t *testing.T) {
+	p := plan(t, domain.DefaultActivity(), 48*time.Hour, 8)
+	// Blasts at 01:15–01:45; cleared from 00:45; re-entry three hours after 01:45.
+	for _, tc := range []struct {
+		at        time.Duration
+		evacuated bool
+		until     time.Duration
+	}{
+		{30 * time.Minute, false, 0},
+		{50 * time.Minute, true, 4*time.Hour + 45*time.Minute},
+		{4 * time.Hour, true, 4*time.Hour + 45*time.Minute},
+		{5 * time.Hour, false, 0},
+		{25 * time.Hour, true, 28*time.Hour + 45*time.Minute},
+	} {
+		start, end, ok := p.Evacuation(tc.at)
+		evacuated := ok && start <= tc.at
+		if evacuated != tc.evacuated || (evacuated && end != tc.until) {
+			t.Errorf("at %v: evacuation %v–%v (%v); want evacuated %v until %v", tc.at, start, end, ok, tc.evacuated, tc.until)
+		}
+	}
+	// Asked before one, it says when the next begins.
+	if start, _, ok := p.Evacuation(10 * time.Hour); !ok || start != 24*time.Hour+45*time.Minute {
+		t.Errorf("the next evacuation after 10:00 starts at %v (%v), want 24:45", start, ok)
+	}
+}

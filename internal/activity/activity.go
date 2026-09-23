@@ -47,9 +47,10 @@ type BlastAt struct {
 
 // Plan is a mine's activity over a scenario.
 type Plan struct {
-	spec   domain.ActivitySpec
-	shifts [][]domain.Point
-	blasts []BlastAt
+	spec        domain.ActivitySpec
+	shifts      [][]domain.Point
+	blasts      []BlastAt
+	evacuations [][2]time.Duration
 }
 
 // NewPlan decides which faces are worked in each shift of the scenario, and
@@ -77,6 +78,7 @@ func NewPlan(spec domain.ActivitySpec, faces []domain.Point, duration time.Durat
 	b := spec.Blasting
 	turn := 0
 	for day := time.Duration(0); day < duration; day += 24 * time.Hour {
+		first := len(p.blasts)
 		for offset := time.Duration(0); offset <= b.Window; offset += b.Every {
 			at := day + b.Start + offset
 			if at >= duration {
@@ -89,8 +91,26 @@ func NewPlan(spec domain.ActivitySpec, faces []domain.Point, duration time.Durat
 				break // a window of zero is one blast
 			}
 		}
+		if len(p.blasts) > first {
+			p.evacuations = append(p.evacuations, [2]time.Duration{
+				p.blasts[first].At - b.Clear, p.blasts[len(p.blasts)-1].At + b.ReEntry,
+			})
+		}
 	}
 	return p, nil
+}
+
+// Evacuation is the production areas' closure for blasting that is under way
+// at a moment, or the next one if none is: cleared from start, closed until
+// end — from Clear before the day's first blast to ReEntry after its last.
+// False when none is under way or to come.
+func (p Plan) Evacuation(at time.Duration) (start, end time.Duration, ok bool) {
+	for _, e := range p.evacuations {
+		if e[1] > at {
+			return e[0], e[1], true
+		}
+	}
+	return 0, 0, false
 }
 
 // ActiveAt is the faces being worked at a moment.

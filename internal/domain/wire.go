@@ -275,12 +275,14 @@ type activityWire struct {
 }
 
 type blastingWire struct {
-	StartSeconds  float64 `json:"start_seconds"`
-	WindowSeconds float64 `json:"window_seconds"`
-	EverySeconds  float64 `json:"every_seconds"`
-	OmoriP        float64 `json:"omori_p"`
-	OmoriCSeconds float64 `json:"omori_c_seconds"`
-	LengthSeconds float64 `json:"length_seconds"`
+	StartSeconds   float64 `json:"start_seconds"`
+	WindowSeconds  float64 `json:"window_seconds"`
+	EverySeconds   float64 `json:"every_seconds"`
+	OmoriP         float64 `json:"omori_p"`
+	OmoriCSeconds  float64 `json:"omori_c_seconds"`
+	LengthSeconds  float64 `json:"length_seconds"`
+	ClearSeconds   float64 `json:"clear_seconds"`
+	ReEntrySeconds float64 `json:"reentry_seconds"`
 }
 
 // MarshalJSON renders an activity in the wire shape.
@@ -291,6 +293,7 @@ func (a ActivitySpec) MarshalJSON() ([]byte, error) {
 		Blasting: blastingWire{
 			StartSeconds: b.Start.Seconds(), WindowSeconds: b.Window.Seconds(), EverySeconds: b.Every.Seconds(),
 			OmoriP: b.OmoriP, OmoriCSeconds: b.OmoriC.Seconds(), LengthSeconds: b.Length.Seconds(),
+			ClearSeconds: b.Clear.Seconds(), ReEntrySeconds: b.ReEntry.Seconds(),
 		},
 	})
 }
@@ -305,6 +308,7 @@ func (a *ActivitySpec) UnmarshalJSON(data []byte) error {
 			StartSeconds: d.Blasting.Start.Seconds(), WindowSeconds: d.Blasting.Window.Seconds(),
 			EverySeconds: d.Blasting.Every.Seconds(), OmoriP: d.Blasting.OmoriP,
 			OmoriCSeconds: d.Blasting.OmoriC.Seconds(), LengthSeconds: d.Blasting.Length.Seconds(),
+			ClearSeconds: d.Blasting.Clear.Seconds(), ReEntrySeconds: d.Blasting.ReEntry.Seconds(),
 		},
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
@@ -321,6 +325,7 @@ func (a *ActivitySpec) UnmarshalJSON(data []byte) error {
 		Blasting: BlastSchedule{
 			Start: seconds(w.StartSeconds), Window: seconds(w.WindowSeconds), Every: seconds(w.EverySeconds),
 			OmoriP: w.OmoriP, OmoriC: seconds(w.OmoriCSeconds), Length: seconds(w.LengthSeconds),
+			Clear: seconds(w.ClearSeconds), ReEntry: seconds(w.ReEntrySeconds),
 		},
 	}
 	return nil

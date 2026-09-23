@@ -34,8 +34,11 @@ the simulator will walk them.
   worked, the Omori sequence after each blast in a daily blasting window, and a
   background elsewhere — instead of evenly along every tunnel around the clock.
   Faces rotate; blasts fire at them in turn; each event records what produced
-  it and the workload the blasts fired. Optional, on a stream of its own: a
-  scenario without it replays exactly as before.
+  it and the workload the blasts fired. Crews work the faces being worked and
+  go to their level's shaft station while the production areas are cleared
+  for blasting, until re-entry (`clear_seconds`, `reentry_seconds`). Optional,
+  on streams of its own: a scenario without it replays exactly as before, its
+  tracks included.
 - **The application and its interface depend on ports they declare.** The run
   engine drives the autoscaler through `run.Autoscaler`, the run manager reads
   runs through `runner.Store`, and the HTTP handlers take a store, a manager and

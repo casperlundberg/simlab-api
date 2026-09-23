@@ -24,21 +24,21 @@ type happening struct {
 }
 
 // workedEvents is a worked mine's events, in time order: what its activity
-// produces at the mine's own rate, and any bursts on top. It also returns the
-// blasts fired.
-func workedEvents(mine domain.Mine, scenario domain.Scenario, layout domain.Layout, random *rand.Rand) (
-	[]happening, []activity.BlastAt, error) {
-	plan, err := activity.NewPlan(*scenario.Activity, mineplan.Faces(layout.Tunnels), scenario.Duration, random)
-	if err != nil {
-		return nil, nil, err
-	}
+// produces at the mine's own rate, and any bursts on top.
+func workedEvents(mine domain.Mine, scenario domain.Scenario, plan activity.Plan, random *rand.Rand) []happening {
 	var out []happening
 	for _, s := range plan.Sources(mine.BackgroundRate, scenario.Duration, random) {
 		out = append(out, happening{at: s.At, source: s})
 	}
 	out = append(out, burstHappenings(mine, scenario, random)...)
 	sort.SliceStable(out, func(i, j int) bool { return out[i].at < out[j].at })
-	return out, plan.Blasts(), nil
+	return out
+}
+
+// planOf is how a worked mine is worked over the scenario: its faces, from the
+// plan of its tunnels, worked and blasted as the activity says.
+func planOf(scenario domain.Scenario, layout domain.Layout, random *rand.Rand) (activity.Plan, error) {
+	return activity.NewPlan(*scenario.Activity, mineplan.Faces(layout.Tunnels), scenario.Duration, random)
 }
 
 // burstHappenings is the scenario's bursts alone: each one's aftershock rate,

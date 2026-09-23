@@ -263,6 +263,7 @@ func Build(mine domain.Mine, scenario domain.Scenario) (Workload, error) {
 		events     []time.Duration
 		worked     []happening
 		blasts     []activity.BlastAt
+		plan       *activity.Plan
 		layout     domain.Layout
 		haveLayout bool
 		err        error
@@ -271,10 +272,15 @@ func Build(mine domain.Mine, scenario domain.Scenario) (Workload, error) {
 		events, err = seismicEvents(mine, scenario, random)
 	} else {
 		layout, haveLayout = layoutOf(mine), true
-		worked, blasts, err = workedEvents(mine, scenario, layout,
-			rand.New(rand.NewPCG(uint64(scenario.Seed), activityStream)))
-		for _, h := range worked {
-			events = append(events, h.at)
+		working := rand.New(rand.NewPCG(uint64(scenario.Seed), activityStream))
+		var made activity.Plan
+		if made, err = planOf(scenario, layout, working); err == nil {
+			plan = &made
+			blasts = made.Blasts()
+			worked = workedEvents(mine, scenario, made, working)
+			for _, h := range worked {
+				events = append(events, h.at)
+			}
 		}
 	}
 	if err != nil {
@@ -305,7 +311,7 @@ func Build(mine domain.Mine, scenario domain.Scenario) (Workload, error) {
 		Jobs:     make([]Job, 0, estimated),
 		Layout:   layout,
 		Model:    Rock,
-		Entities: workforce(layout, scenario),
+		Entities: workforce(layout, scenario, plan),
 		Blasts:   blasts,
 	}
 	for k, at := range events {

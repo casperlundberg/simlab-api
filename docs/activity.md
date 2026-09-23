@@ -14,7 +14,8 @@ worked.
   "areas": 4, "rotate_seconds": 43200,
   "mix": {"blast": 0.3, "work": 0.5, "background": 0.2},
   "blasting": {"start_seconds": 4500, "window_seconds": 1800, "every_seconds": 600,
-               "omori_p": 1.0, "omori_c_seconds": 300, "length_seconds": 43200},
+               "omori_p": 1.0, "omori_c_seconds": 300, "length_seconds": 43200,
+               "clear_seconds": 1800, "reentry_seconds": 10800},
   "spread_m": 75
 }
 ```
@@ -32,6 +33,18 @@ worked.
   `length_seconds`.
 - **Events of work and blasts** fall around their face with a spread of
   `spread_m` along each axis. Bursts still happen on top, as scenarios say.
+- **Crews work the faces and leave for blasting.** People and crewed vehicles
+  go to the faces being worked — a crew staying 45 minutes to two hours at a
+  face on its own level where one is worked; service vehicles stopping briefly
+  — and before the production areas are cleared (`clear_seconds` before the
+  day's first blast) they go to their level's shaft station, returning after
+  re-entry (`reentry_seconds` after the last). A crew that would still be at a
+  face when clearing begins leaves early. Autonomous haulage carries on.
+
+That gives the link between people and seismicity both signs a real mine has:
+during a shift the crews are where the working induces events; at blasting,
+where most of the day's events begin, they have deliberately left — and the
+decision that follows is when to go back.
 
 The activity draws from a stream of its own, so a scenario without it replays
 exactly as before; the pinned job-stream digests hold that.
@@ -55,6 +68,7 @@ The defaults are a starting point to sweep, not findings.
   sequences, power-law decay set in within an hour in 98 % and p ranged 0.4–1.6,
   with site means 0.74–1.05 (same paper); re-entry protocols wait from 2 hours
   to a 12-hour background window. Hence p = 1, c = 5 minutes and sequences drawn
-  over 12 hours.
+  over 12 hours. Re-entry defaults to three hours after the last blast — LKAB's
+  "several hours" of ventilation, within the 2–12 hours the protocols wait.
 - **The mix and the number of faces** have no single right value: they are
   swept.

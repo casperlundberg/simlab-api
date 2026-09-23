@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/casperlundberg/simlab-api/internal/activity"
 	"github.com/casperlundberg/simlab-api/internal/domain"
 	"github.com/casperlundberg/simlab-api/internal/mineplan"
 )
@@ -40,7 +41,7 @@ const trackTail = 24 * time.Hour
 const workforceStream = 0x94D049BB133111EB
 
 // workforce draws where everyone goes during a scenario.
-func workforce(layout domain.Layout, scenario domain.Scenario) []domain.Entity {
+func workforce(layout domain.Layout, scenario domain.Scenario, plan *activity.Plan) []domain.Entity {
 	crew := defaultWorkforce
 	if scenario.Workforce != nil {
 		crew = *scenario.Workforce
@@ -53,6 +54,7 @@ func workforce(layout domain.Layout, scenario domain.Scenario) []domain.Entity {
 		return []domain.Entity{}
 	}
 	m := newMovement(graph, layout, scenario.Duration+trackTail)
+	m.plan = plan
 
 	var out []domain.Entity
 	for i, spec := range []struct {
@@ -89,11 +91,19 @@ type movement struct {
 	// tip is where haulers unload: the bottom shaft station, where ore goes up.
 	tip int
 
+	// plan, in a worked mine, is which faces are worked when and when the
+	// production areas are cleared for blasting; stations are where each
+	// level's crews wait while they are. Nil plan: people move between
+	// workplaces as they always have.
+	plan     *activity.Plan
+	stations map[float64]int
+
 	routes map[int]mineplan.Routes
 }
 
 func newMovement(graph *mineplan.Graph, layout domain.Layout, until time.Duration) *movement {
-	m := &movement{graph: graph, until: until, byLevel: map[float64][]int{}, routes: map[int]mineplan.Routes{}, tip: -1}
+	m := &movement{graph: graph, until: until, byLevel: map[float64][]int{}, routes: map[int]mineplan.Routes{},
+		tip: -1, stations: map[float64]int{}}
 
 	seen := map[int]bool{}
 	deepest := math.Inf(1)
@@ -108,6 +118,9 @@ func newMovement(graph *mineplan.Graph, layout domain.Layout, until time.Duratio
 			}
 		}
 		if tunnel.Kind == mineplan.Access && strings.HasSuffix(tunnel.ID, "-shaft-station") && len(tunnel.Path) > 1 {
+			if node, ok := graph.NodeAt(tunnel.Path[0]); ok {
+				m.stations[tunnel.Path[0].Z] = node
+			}
 			if end := tunnel.Path[len(tunnel.Path)-1]; end.Z < deepest {
 				if node, ok := graph.NodeAt(end); ok {
 					deepest, m.tip = end.Z, node
@@ -134,7 +147,12 @@ func newMovement(graph *mineplan.Graph, layout domain.Layout, until time.Duratio
 // person walks between working places on one level, staying a while at each.
 func (m *movement) person(random *rand.Rand) []domain.Waypoint {
 	start := m.workplaces[random.IntN(len(m.workplaces))]
-	return m.travel(start, WalkingSpeed, random, func(at int) (int, time.Duration) {
+	if m.plan != nil {
+		// A crew works a face for a good part of its shift — drilling a round,
+		// charging, scaling — rather than hopping between faces.
+		return m.workedCrew(random, WalkingSpeed, 45, 120)
+	}
+	return m.travel(start, WalkingSpeed, random, func(at int, _ time.Duration) (int, time.Duration) {
 		level := m.byLevel[m.graph.Point(at).Z]
 		// Now and then a person moves to another level; mostly they stay on
 		// the one they were sent to.
@@ -148,7 +166,10 @@ func (m *movement) person(random *rand.Rand) []domain.Waypoint {
 // crewedVehicle drives anywhere in the mine, stopping briefly.
 func (m *movement) crewedVehicle(random *rand.Rand) []domain.Waypoint {
 	start := m.workplaces[random.IntN(len(m.workplaces))]
-	return m.travel(start, crewedSpeed, random, func(int) (int, time.Duration) {
+	if m.plan != nil {
+		return m.workedCrew(random, crewedSpeed, 2, 6)
+	}
+	return m.travel(start, crewedSpeed, random, func(int, time.Duration) (int, time.Duration) {
 		if random.Float64() < 0.3 {
 			return m.graph.RandomNode(random), minutes(random, 1, 4)
 		}
@@ -159,7 +180,7 @@ func (m *movement) crewedVehicle(random *rand.Rand) []domain.Waypoint {
 // autonomousVehicle hauls: to a working place to load, to the tip to unload,
 // and round again.
 func (m *movement) autonomousVehicle(random *rand.Rand) []domain.Waypoint {
-	return m.travel(m.tip, autonomousSpeed, random, func(at int) (int, time.Duration) {
+	return m.travel(m.tip, autonomousSpeed, random, func(at int, _ time.Duration) (int, time.Duration) {
 		if at == m.tip {
 			return m.workplaces[random.IntN(len(m.workplaces))], minutes(random, 1.5, 3)
 		}
@@ -171,13 +192,13 @@ func (m *movement) autonomousVehicle(random *rand.Rand) []domain.Waypoint {
 // next is given where the entity is and says where it goes and how long it
 // stays once there.
 func (m *movement) travel(start int, speed float64, random *rand.Rand,
-	next func(at int) (int, time.Duration)) []domain.Waypoint {
+	next func(at int, now time.Duration) (int, time.Duration)) []domain.Waypoint {
 	at := start
 	now := time.Duration(0)
 	track := []domain.Waypoint{waypoint(0, m.graph.Point(start))}
 
 	for now < m.until {
-		destination, stay := next(at)
+		destination, stay := next(at, now)
 		routes, ok := m.routes[at]
 		if !ok {
 			routes = m.graph.Routes(at)
@@ -224,4 +245,58 @@ func waypoint(at time.Duration, p domain.Point) domain.Waypoint {
 
 func minutes(random *rand.Rand, low, high float64) time.Duration {
 	return time.Duration((low + random.Float64()*(high-low)) * float64(time.Minute))
+}
+
+// clearingLead is how far ahead a crew looks for the production areas being
+// cleared: the longest it may walk to a face and stay there. A crew that would
+// still be at a face when clearing begins goes to its shaft station instead.
+const clearingLead = 45 * time.Minute
+
+// workedCrew moves a crew in a worked mine: from face to face among those
+// being worked, and to its level's shaft station while the production areas
+// are cleared for blasting, until re-entry.
+func (m *movement) workedCrew(random *rand.Rand, speed, low, high float64) []domain.Waypoint {
+	faces := m.plan.ActiveAt(0)
+	start := m.nodeAt(faces[random.IntN(len(faces))])
+	return m.travel(start, speed, random, func(at int, now time.Duration) (int, time.Duration) {
+		if cleared, reentry, ok := m.plan.Evacuation(now); ok && cleared <= now+clearingLead {
+			return m.station(at), max(reentry-now, time.Minute)
+		}
+		faces := m.plan.ActiveAt(now)
+		// A face on the crew's own level when one is worked: crossing levels
+		// is a long walk down the ramp.
+		var here []domain.Point
+		for _, f := range faces {
+			if f.Z == m.graph.Point(at).Z {
+				here = append(here, f)
+			}
+		}
+		if len(here) > 0 {
+			faces = here
+		}
+		return m.nodeAt(faces[random.IntN(len(faces))]), minutes(random, low, high)
+	})
+}
+
+// nodeAt is the node at a point of the plan, or the nearest one.
+func (m *movement) nodeAt(p domain.Point) int {
+	if node, ok := m.graph.NodeAt(p); ok {
+		return node
+	}
+	best, nearest := math.Inf(1), m.tip
+	for node := 0; node < m.graph.Nodes(); node++ {
+		if d := m.graph.Point(node).DistanceTo(p); d < best {
+			best, nearest = d, node
+		}
+	}
+	return nearest
+}
+
+// station is the shaft station of the level a node is on, where its crews
+// wait while blasting is under way; the bottom one on a level without.
+func (m *movement) station(at int) int {
+	if node, ok := m.stations[m.graph.Point(at).Z]; ok {
+		return node
+	}
+	return m.tip
 }
